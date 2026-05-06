@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { toast } from 'sonner';
 import { PaperPlaneRight, Image, X, Microphone, Stop, Play, Pause, Trash, Paperclip, FileDoc } from '@phosphor-icons/react';
-import api, { buildAssetUrl } from '../utils/api';
+import api, { resolveAssetUrl } from '../utils/api';
 
 const CreatePostDialog = ({ user, onPostCreated }) => {
   const [open, setOpen] = useState(false);
@@ -44,7 +44,7 @@ const CreatePostDialog = ({ user, onPostCreated }) => {
     setUploading(true);
     try {
       const response = await api.post('/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } });
-      return buildAssetUrl(response.data.url);
+      return resolveAssetUrl(response.data.url);
     } catch (error) {
       toast.error('Failed to upload file');
       return null;
