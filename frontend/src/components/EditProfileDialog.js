@@ -6,8 +6,7 @@ import { Switch } from './ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { toast } from 'sonner';
 import { PencilSimple, Camera, Upload } from '@phosphor-icons/react';
-import api from '../utils/api';
-import { API_BASE } from '../utils/api';
+import api, { resolveAssetUrl } from '../utils/api';
 
 const EditProfileDialog = ({ user, onProfileUpdated }) => {
   const [open, setOpen] = useState(false);
@@ -52,8 +51,7 @@ const EditProfileDialog = ({ user, onProfileUpdated }) => {
       const response = await api.post('/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      const backendUrl = process.env.REACT_APP_BACKEND_URL;
-      const imageUrl = `${backendUrl}${response.data.url}`;
+      const imageUrl = resolveAssetUrl(response.data.url);
       
       if (type === 'pfp') {
         setFormData(prev => ({ ...prev, profile_picture: imageUrl }));
