@@ -1,0 +1,169 @@
+{
+  "theme_and_archetype": {
+    "theme": "dark",
+    "archetype": "Archetype 4 (Swiss & High-Contrast)",
+    "description": "A dark-first, brutally clear, and raw Gen Z aesthetic. Combines the utility of a Discord/gamer layout with the visual identity of a high-end streetwear or modern social platform. Focuses heavily on extreme contrast, intentional grid lines, and bold typography to resolve any prior muddy dark mode issues. No soft dropshadows in dark mode—only sharp borders and solid colors.",
+    "tone": "Energetic, authentic, raw, and highly functional."
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Unbounded",
+      "body": "Manrope",
+      "mono": "JetBrains Mono"
+    },
+    "font_imports": [
+      "@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;700;900&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');"
+    ],
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter leading-none",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-bold tracking-tight",
+      "h4": "text-lg sm:text-xl font-semibold",
+      "body": "text-base leading-relaxed",
+      "small_label": "text-xs font-mono uppercase tracking-[0.2em]"
+    },
+    "rules": [
+      "Headings strictly use Unbounded with tight letter spacing.",
+      "Never center text by default unless it's a specific empty state or hero moment.",
+      "Labels, badges, and small metadata must use JetBrains Mono."
+    ]
+  },
+  "colors": {
+    "dark_mode_fix_protocol": "CRITICAL: The previous dark mode failed due to muddy colors. All dark mode backgrounds must be pure Deep Obsidian (#0A0A0A) or Neutral-950. All elevated surfaces must use a sharp 1px border instead of a shadow.",
+    "dark": {
+      "background_base": "bg-neutral-950 text-white",
+      "background_elevated": "bg-neutral-900",
+      "background_surface": "bg-neutral-800",
+      "primary_action": "bg-yellow-400 text-neutral-950",
+      "primary_action_hover": "hover:bg-yellow-300",
+      "secondary_action": "bg-neutral-800 text-white",
+      "secondary_action_hover": "hover:bg-neutral-700",
+      "border": "border-neutral-800",
+      "border_focus": "focus:border-yellow-400 focus:ring-1 focus:ring-yellow-400",
+      "text_primary": "text-white",
+      "text_secondary": "text-neutral-400",
+      "text_muted": "text-neutral-500",
+      "accent_success": "text-green-400 bg-green-400/10",
+      "accent_danger": "text-red-500 bg-red-500/10"
+    },
+    "light": {
+      "background_base": "bg-neutral-50 text-neutral-950",
+      "background_elevated": "bg-white",
+      "background_surface": "bg-neutral-100",
+      "primary_action": "bg-neutral-950 text-white",
+      "primary_action_hover": "hover:bg-neutral-800",
+      "secondary_action": "bg-neutral-100 text-neutral-900",
+      "secondary_action_hover": "hover:bg-neutral-200",
+      "border": "border-neutral-200",
+      "border_focus": "focus:border-neutral-950 focus:ring-1 focus:ring-neutral-950",
+      "text_primary": "text-neutral-950",
+      "text_secondary": "text-neutral-500",
+      "text_muted": "text-neutral-400",
+      "accent_success": "text-green-700 bg-green-100",
+      "accent_danger": "text-red-600 bg-red-100"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "The 'Control Room' Grid heavily adapted for a social feed. High density where needed (sidebars) but generous padding (p-6, p-8) inside feed posts to let content breathe.",
+    "global_layout": {
+      "desktop": "grid grid-cols-1 md:grid-cols-[280px_1fr] lg:grid-cols-[280px_1fr_320px] min-h-screen gap-0",
+      "mobile": "flex flex-col min-h-screen pb-16 (for mobile bottom nav)"
+    },
+    "components": {
+      "sidebar": "Fixed width, sticky top-0, h-screen, border-r (border-neutral-800 in dark mode). No shadows.",
+      "feed_container": "max-w-2xl mx-auto w-full py-8 px-4 sm:px-6 flex flex-col gap-6",
+      "right_panel": "Sticky top-0, h-screen, border-l border-neutral-800, p-6 hidden lg:block",
+      "post_card": "p-5 sm:p-6 border border-neutral-800 rounded-xl bg-neutral-900/50 backdrop-blur-sm",
+      "chat_room": "Flex-1 flex flex-col h-[calc(100vh-theme(spacing.16))] border border-neutral-800 rounded-xl overflow-hidden"
+    },
+    "radius": "rounded-xl (not too round, maintaining a slightly sharp/raw tech feel)",
+    "spacing_scale": "Use p-4 for dense lists, p-6 for cards, p-8 for major sections."
+  },
+  "interactions_and_motion": {
+    "hover_states": "CRITICAL: Never rely on inheritance. Explicitly set text and bg color on hover. E.g., hover:bg-neutral-800 hover:text-white. Icons should translate-x-1 or scale-105 on hover.",
+    "focus_states": "All inputs MUST have high-contrast focus rings. focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-offset-2 focus:ring-offset-neutral-950 (in dark mode).",
+    "transitions": "transition-all duration-200 ease-in-out",
+    "animations": {
+      "feed_entrance": "Staggered fade-up for posts.",
+      "chat_new_message": "Slide-in from bottom."
+    }
+  },
+  "components_strategy": {
+    "icons": {
+      "library": "lucide-react",
+      "style": "Use 20px or 24px stroke-width 2. Keep it crisp."
+    },
+    "buttons": {
+      "primary": "inline-flex items-center justify-center font-bold px-6 py-3 rounded-xl transition-all active:scale-95",
+      "ghost": "hover:bg-neutral-800 hover:text-white rounded-lg px-3 py-2 transition-colors text-neutral-400"
+    },
+    "inputs": {
+      "text": "w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-white placeholder:text-neutral-500 focus:border-yellow-400",
+      "textarea": "w-full bg-transparent border-none focus:ring-0 resize-none text-lg"
+    },
+    "navigation": {
+      "active_state": "bg-neutral-800 text-white font-bold before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:bg-yellow-400 before:rounded-r-full relative"
+    }
+  },
+  "media": {
+    "image_urls": {
+      "avatars": [
+        {
+          "url": "https://images.unsplash.com/photo-1544963347-f7caa3b1f17c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHw0fHxnZW4lMjB6JTIwc3R1ZGVudHMlMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzU3NDE0NTJ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Student Avatar 1 - Male looking sideways",
+          "usage": "Current user avatar or feed post author"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1662400271972-7b3e227981f0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxnZW4lMjB6JTIwc3R1ZGVudHMlMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzU3NDE0NTJ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Student Avatar 2 - Female with sunglasses",
+          "usage": "Friend/Follower avatar"
+        }
+      ],
+      "banners": [
+        {
+          "url": "https://images.unsplash.com/photo-1651136044251-bac298a4f1e7?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwxfHx2aWJyYW50JTIwYWJzdHJhY3QlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3NTc0MTQ1Mnww&ixlib=rb-4.1.0&q=85",
+          "description": "Vibrant abstract colorful wires",
+          "usage": "User Profile Header/Banner"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1773983679454-7b3db7546d2f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwyfHx2aWJyYW50JTIwYWJzdHJhY3QlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3NTc0MTQ1Mnww&ixlib=rb-4.1.0&q=85",
+          "description": "Abstract colorful diagonal stripes",
+          "usage": "Group/Chat Room Cover Image"
+        }
+      ],
+      "posts": [
+        {
+          "url": "https://images.unsplash.com/photo-1583865257500-ed3750abca74?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwzfHxnZW4lMjB6JTIwc3R1ZGVudHMlMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzU3NDE0NTJ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Group of students hanging out",
+          "usage": "Example feed post image"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1764079833254-a14555e35d9e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHw0fHxzY2hvb2wlMjBjYW1wdXMlMjBhZXN0aGV0aWN8ZW58MHx8fHwxNzc1NzQxNDUyfDA&ixlib=rb-4.1.0&q=85",
+          "description": "School Campus Event / Building",
+          "usage": "Example feed post image for school announcements"
+        }
+      ]
+    }
+  },
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a data-testid attribute.",
+    "convention": "kebab-case, role-based",
+    "examples": [
+      "data-testid=\"feed-post-like-button\"",
+      "data-testid=\"chat-send-message-input\"",
+      "data-testid=\"sidebar-nav-profile-link\"",
+      "data-testid=\"theme-toggle-button\""
+    ]
+  },
+  "instructions_to_main_agent": [
+    "1. You must implement both light and dark modes, but treat DARK MODE as the default and primary focus.",
+    "2. DO NOT use generic Tailwind Slate colors. Use absolute neutral-950 (#0a0a0a) for backgrounds and neutral-900 for cards in dark mode. It prevents the muddy look the user complained about.",
+    "3. Use yellow-400 as the bold CTA color in dark mode. Use black/neutral-950 text ON the yellow button for contrast.",
+    "4. All borders in dark mode must be border-neutral-800. Do not use shadows in dark mode.",
+    "5. Implement a sticky sidebar for navigation (like Discord/Twitter).",
+    "6. Build the 'Create Post' area as a minimal, borderless input field that expands, housed inside a neutral-900 card.",
+    "7. Ensure the Notification Bell and Search Sidebar are highly accessible and use slide-over or popover from Shadcn.",
+    "8. Use the provided images for all avatars, banners, and dummy posts. NO PLACEHOLDER URLs.",
+    "9. Use Lucide-react for all icons."
+  ]
+}
