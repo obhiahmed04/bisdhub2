@@ -51,6 +51,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const location = useLocation();
   const chatEndRef = useRef(null);
   const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
   const searchTimeoutRef = useRef(null);
 
   useEffect(() => {
@@ -75,9 +76,11 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   useEffect(() => { loadFeed(); }, [feedType]);
 
   useEffect(() => {
-    if (activeChatRoom && wsRef.current?.readyState === WebSocket.OPEN) {
+    if (activeChatRoom) {
       loadChatMessages();
-      wsRef.current.send(JSON.stringify({ type: 'join_room', room: activeChatRoom }));
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'join_room', room: activeChatRoom }));
+      }
     }
   }, [activeChatRoom]);
 
@@ -108,6 +111,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     socket.onopen = () => {
       setWsReady(true);
       socket.send(JSON.stringify({ type: 'join_room', room: activeChatRoom }));
+      loadChatMessages();
     };
 
     socket.onmessage = (event) => {
@@ -141,8 +145,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     socket.onerror = () => setWsReady(false);
     socket.onclose = () => {
       setWsReady(false);
-      // Auto-reconnect after 3 seconds
-      setTimeout(() => {
+      // Auto-reconnect after 3 seconds, but only if not already scheduled
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
         if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
           connectWebSocket();
         }
@@ -150,7 +156,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     };
 
     setWs(socket);
-    return () => { socket.close(); };
+    return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      socket.close();
+    };
   };
 
   const loadFeed = async () => {
@@ -256,7 +265,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     form.append('file', file);
     try {
       const res = await api.post('/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } });
-            setDmAttachImages(prev => [...prev, `${backendUrl}${res.data.url}`]);
+            setDmAttachImages(prev => [...prev, resolveAssetUrl(res.data.url)]);
     } catch (err) { toast.error('Upload failed'); }
     e.target.value = '';
   };
@@ -589,10 +598,6 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <span className="hidden sm:inline">Share</span>
                         </button>
                         <PostOptionsMenu post={post} canDelete={post.user_id === user.user_id || user.is_admin || user.is_moderator} onDelete={() => deletePost(post.post_id)} />
-                            className="flex items-center gap-1.5 font-medium text-[#4B4B4B] hover:text-[var(--red)]" data-testid={`delete-post-${post.post_id}`}>
-                            <span className="text-xs">Delete</span>
-                          </button>
-                        )}
                       </div>
                       
                       {/* Repost indicator */}
