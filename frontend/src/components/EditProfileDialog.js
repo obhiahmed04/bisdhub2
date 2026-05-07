@@ -5,7 +5,7 @@ import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { toast } from 'sonner';
-import { PencilSimple, Camera, Upload } from '@phosphor-icons/react';
+import { PencilSimple, Camera, Upload, ClockCountdown } from '@phosphor-icons/react';
 import api, { resolveAssetUrl } from '../utils/api';
 
 const EditProfileDialog = ({ user, onProfileUpdated }) => {
@@ -17,8 +17,20 @@ const EditProfileDialog = ({ user, onProfileUpdated }) => {
     banner_image: user.banner_image || '',
     is_profile_public: user.is_profile_public ?? true,
     is_followers_public: user.is_followers_public ?? true,
-    is_following_public: user.is_following_public ?? true
+    is_following_public: user.is_following_public ?? true,
+    is_friends_public: user.is_friends_public ?? true,
   });
+
+  // Username cooldown
+  const getUsernameCooldown = () => {
+    if (!user.username_last_changed) return null;
+    try {
+      const last = new Date(user.username_last_changed);
+      const daysLeft = 7 - Math.floor((Date.now() - last.getTime()) / (1000 * 60 * 60 * 24));
+      return daysLeft > 0 ? daysLeft : null;
+    } catch { return null; }
+  };
+  const usernameCooldownDays = getUsernameCooldown();
   const [loading, setLoading] = useState(false);
   const [uploadingPfp, setUploadingPfp] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
