@@ -1,6 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, Depends, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -206,25 +205,28 @@ TEST_USERS = [
 @app.get("/dev/create-owner")
 async def create_owner_dev():
     owner = next(u for u in TEST_USERS if u["id_number"] == "OWNER001")
-    doc = _make_full_user_doc(**owner)
+    doc = await asyncio.to_thread(_make_full_user_doc, **owner)
     await db.users.update_one({"id_number": owner["id_number"]}, {"$set": doc}, upsert=True)
     return {"status": "owner created", "login": "OWNER001 / owner123"}
 
 @app.get("/dev/create-admin")
 async def create_admin_dev():
     admin = next(u for u in TEST_USERS if u["id_number"] == "ADMIN001")
-    doc = _make_full_user_doc(**admin)
+    doc = await asyncio.to_thread(_make_full_user_doc, **admin)
     await db.users.update_one({"id_number": admin["id_number"]}, {"$set": doc}, upsert=True)
     return {"status": "admin created", "login": "ADMIN001 / admin123"}
 
 @app.get("/dev/create-test-users")
 async def create_test_users_dev():
-    results = []
-    for spec in TEST_USERS:
-        doc = _make_full_user_doc(**spec)
-        await db.users.update_one({"id_number": spec["id_number"]}, {"$set": doc}, upsert=True)
-        results.append({"id_number": spec["id_number"], "password": spec["password"], "role": spec["role"], "status": "upserted"})
-    return {"status": "test users ready", "accounts": results}
+    try:
+        results = []
+        for spec in TEST_USERS:
+            doc = await asyncio.to_thread(_make_full_user_doc, **spec)
+            await db.users.update_one({"id_number": spec["id_number"]}, {"$set": doc}, upsert=True)
+            results.append({"id_number": spec["id_number"], "password": spec["password"], "role": spec["role"], "status": "upserted"})
+        return {"status": "test users ready", "accounts": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # WebSocket connection manager
 # WebSocket connection manager
@@ -1762,7 +1764,7 @@ async def moderate_user(action: ModerationAction, mod: User = Depends(verify_mod
     return {"status": "success", "message": f"User {action.action}ed successfully"}
 
 @api_router.delete("/mod/posts/{post_id}")
-async def delete_post(post_id: str, reason: dict, mod: User = Depends(verify_moderator)):
+async def mod_delete_post(post_id: str, reason: dict, mod: User = Depends(verify_moderator)):
     post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
