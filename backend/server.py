@@ -174,6 +174,9 @@ def _normalize_user_doc(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
     normalized.setdefault("friends", [])
     normalized.setdefault("friend_requests_sent", [])
     normalized.setdefault("friend_requests_received", [])
+    normalized.setdefault("username_history", [])
+    normalized.setdefault("username_last_changed", None)
+    normalized.setdefault("is_friends_public", True)
 
     created_at = normalized.get("created_at")
     if isinstance(created_at, str):
@@ -273,15 +276,17 @@ manager = ConnectionManager()
 class RegistrationRequest(BaseModel):
     id_number: str
     full_name: str
-    date_of_birth: str  # ISO date string from calendar picker
-    current_class: str  # "1"-"12" for current students
-    section: str  # B1, B2, G1, G2
+    username: Optional[str] = None       # User-chosen username
+    password: Optional[str] = None       # User-set password (stored as hash)
+    date_of_birth: str
+    current_class: str
+    section: str
     email: EmailStr
     phone_number: Optional[str] = None
     is_ex_student: bool
-    date_of_leaving: Optional[str] = None  # ISO date for ex-students
-    last_class: Optional[str] = None  # Last class at BISD
-    current_status: Optional[str] = None  # College, University, Higher Studies, Graduated (ex-students only)
+    date_of_leaving: Optional[str] = None
+    last_class: Optional[str] = None
+    current_status: Optional[str] = None
 
 class Registration(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -304,6 +309,10 @@ class Registration(BaseModel):
     editable_until: Optional[str] = None  # ISO datetime - 10 min edit window
     email_verified: bool = False
     phone_verified: bool = False
+    preset_username: Optional[str] = None
+    preset_password_hash: Optional[str] = None
+    requested_password_hash: Optional[str] = None  # User-set password hash
+    requested_username: Optional[str] = None        # User-chosen username
 
 class OTPVerification(BaseModel):
     email: EmailStr
@@ -353,6 +362,8 @@ class User(BaseModel):
     friends: List[str] = Field(default_factory=list)
     friend_requests_sent: List[str] = Field(default_factory=list)
     friend_requests_received: List[str] = Field(default_factory=list)
+    username_history: List[str] = Field(default_factory=list)
+    username_last_changed: Optional[str] = None
 
 class Post(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -741,43 +752,78 @@ async def verify_otp(request: OTPVerification):
 # Registration
 @api_router.post("/auth/register")
 async def register(reg_request: RegistrationRequest):
+    # Grade restriction: must be class 4 or above for current students
+    if not reg_request.is_ex_student:
+        try:
+            cls = int(reg_request.current_class)
+            if cls < 4:
+                raise HTTPException(status_code=400, detail="GRADE_TOO_LOW")
+        except (ValueError, TypeError):
+            pass
+
     # Check if ID already exists
     existing = await db.registrations.find_one({"id_number": reg_request.id_number}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="ID number already registered")
-    
+
     existing_user = await db.users.find_one({"id_number": reg_request.id_number}, {"_id": 0})
     if existing_user:
         raise HTTPException(status_code=400, detail="User already exists")
-    
+
+    # Validate and clean username if provided
+    requested_username = None
+    if reg_request.username:
+        requested_username = re.sub(r"[^a-zA-Z0-9_]+", "", reg_request.username.lower())[:24]
+        if requested_username:
+            taken = await db.users.find_one({"username": requested_username}, {"_id": 0})
+            if taken:
+                raise HTTPException(status_code=400, detail="Username already taken")
+
+    # Hash password if provided
+    requested_password_hash = None
+    if reg_request.password:
+        requested_password_hash = await asyncio.to_thread(
+            lambda: bcrypt.hashpw(reg_request.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        )
+
     # Get next serial number
     last_reg = await db.registrations.find_one({}, {"_id": 0, "serial_number": 1}, sort=[("serial_number", -1)])
-    next_serial = (last_reg.get('serial_number', 0) + 1) if last_reg else 1
-    
-    registration = Registration(**reg_request.model_dump())
+    next_serial = (last_reg.get("serial_number", 0) + 1) if last_reg else 1
+
+    reg_data = reg_request.model_dump(exclude={"password", "username"})
+    registration = Registration(**reg_data)
     registration.serial_number = next_serial
     registration.editable_until = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
-    
+    registration.requested_password_hash = requested_password_hash
+    registration.requested_username = requested_username
+
     doc = registration.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
-    
+    doc["created_at"] = doc["created_at"].isoformat()
+
     await db.registrations.insert_one(doc)
     return {
-        "status": "success", 
-        "message": "Registration submitted for approval", 
+        "status": "success",
+        "message": "Registration submitted for approval",
         "reg_id": registration.reg_id,
         "serial_number": next_serial,
         "editable_until": registration.editable_until,
-        "registration": {k: v for k, v in doc.items() if k not in ['_id']}
+        "registration": {k: v for k, v in doc.items() if k not in ["_id", "requested_password_hash"]}
     }
 
-# Admin: Get pending registrations
+# Admin: Get pending registrations (only shows ones past 10-min edit window)
 @api_router.get("/admin/registrations/pending")
 async def get_pending_registrations(admin: User = Depends(verify_admin)):
-    registrations = await db.registrations.find({"status": "pending"}, {"_id": 0}).to_list(1000)
+    now = datetime.now(timezone.utc).isoformat()
+    registrations = await db.registrations.find({
+        "status": "pending",
+        "$or": [
+            {"editable_until": {"$lte": now}},
+            {"editable_until": None}
+        ]
+    }, {"_id": 0}).to_list(1000)
     for reg in registrations:
-        if isinstance(reg.get('created_at'), str):
-            reg['created_at'] = datetime.fromisoformat(reg['created_at'])
+        if isinstance(reg.get("created_at"), str):
+            reg["created_at"] = datetime.fromisoformat(reg["created_at"])
     return registrations
 
 # Admin: Approve/Reject registration
@@ -788,25 +834,36 @@ async def admin_action_registration(action: AdminAction, admin: User = Depends(v
         raise HTTPException(status_code=404, detail="Registration not found")
     
     if action.action == "approve":
-        if not action.password:
-            raise HTTPException(status_code=400, detail="Password is required for approval")
-        # Create user account
-        password_hash = bcrypt.hashpw(action.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
+        # Use admin-provided password, or fall back to user's self-set password
+        if action.password:
+            password_hash = await asyncio.to_thread(
+                lambda: bcrypt.hashpw(action.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            )
+        elif registration.get("requested_password_hash"):
+            password_hash = registration["requested_password_hash"]
+        else:
+            raise HTTPException(status_code=400, detail="Password required — user did not set one during registration")
+
+        # Use user-chosen username or fall back to ID-based
+        chosen_username = registration.get("requested_username") or             (re.sub(r"[^a-zA-Z0-9_]+", "", registration["id_number"].lower()) or "user")[:24]
+
+        name_parts = registration["full_name"].split()
+        display_name = f"{name_parts[0]} {name_parts[-1]}" if len(name_parts) > 1 else registration["full_name"]
+
         user = User(
-            id_number=registration['id_number'],
-            username=(re.sub(r"[^a-zA-Z0-9_]+", "", registration['id_number'].lower()) or 'user')[:24],
-            full_name=registration['full_name'],
-            display_name=registration['full_name'].split()[0] + " " + registration['full_name'].split()[-1],
-            date_of_birth=registration['date_of_birth'],
-            current_class=registration['current_class'],
-            section=registration['section'],
-            email=registration['email'],
-            phone_number=registration.get('phone_number'),
-            is_ex_student=registration['is_ex_student'],
-            date_of_leaving=registration.get('date_of_leaving'),
-            last_class=registration.get('last_class'),
-            current_status=registration.get('current_status'),
+            id_number=registration["id_number"],
+            username=chosen_username,
+            full_name=registration["full_name"],
+            display_name=display_name,
+            date_of_birth=registration["date_of_birth"],
+            current_class=registration["current_class"],
+            section=registration["section"],
+            email=registration["email"],
+            phone_number=registration.get("phone_number"),
+            is_ex_student=registration["is_ex_student"],
+            date_of_leaving=registration.get("date_of_leaving"),
+            last_class=registration.get("last_class"),
+            current_status=registration.get("current_status"),
             password_hash=password_hash
         )
         
@@ -931,26 +988,47 @@ async def get_my_profile(user: User = Depends(get_current_user)):
 @api_router.put("/users/me")
 async def update_profile(update: ProfileUpdate, user: User = Depends(get_current_user)):
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
-    # Never allow real name changes via self-service
-    update_data.pop('display_name', None)
-    update_data.pop('full_name', None)
-    if 'username' in update_data:
-        username = re.sub(r'[^a-zA-Z0-9_]+', '', update_data['username'].lower())[:24]
+    # Never allow real name or ID changes via self-service
+    for field in ("display_name", "full_name", "id_number"):
+        update_data.pop(field, None)
+
+    if "username" in update_data:
+        username = re.sub(r"[^a-zA-Z0-9_]+", "", update_data["username"].lower())[:24]
         if not username:
-            raise HTTPException(status_code=400, detail='Invalid username')
+            raise HTTPException(status_code=400, detail="Invalid username")
+
+        # 7-day cooldown check
+        current_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+        last_change = current_doc.get("last_username_change")
+        if last_change:
+            try:
+                last_dt = datetime.fromisoformat(last_change.replace("Z", "+00:00"))
+                if (datetime.now(timezone.utc) - last_dt).days < 7:
+                    days_left = 7 - (datetime.now(timezone.utc) - last_dt).days
+                    raise HTTPException(status_code=400, detail=f"You can change your username again in {days_left} day(s)")
+            except (ValueError, AttributeError):
+                pass
+
         existing_user = await db.users.find_one({"username": username, "user_id": {"$ne": user.user_id}}, {"_id": 0})
         if existing_user:
-            raise HTTPException(status_code=400, detail='Username already taken')
-        update_data['username'] = username
-    
+            raise HTTPException(status_code=400, detail="Username already taken")
+
+        # Store old username in history (keep last 3)
+        old_username = current_doc.get("username")
+        if old_username:
+            history = current_doc.get("username_history", [])
+            if old_username not in history:
+                history = [old_username] + history
+            update_data["username_history"] = history[:3]
+        update_data["username"] = username
+        update_data["last_username_change"] = datetime.now(timezone.utc).isoformat()
+
     if update_data:
-        await db.users.update_one(
-            {"user_id": user.user_id},
-            {"$set": update_data}
-        )
-    
+        await db.users.update_one({"user_id": user.user_id}, {"$set": update_data})
+
     updated_user = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
-    return User(**_normalize_user_doc(updated_user)).model_dump(exclude={'password_hash'})
+    result = _normalize_user_doc(updated_user)
+    return {k: v for k, v in result.items() if k != "password_hash"}
 
 # Search users (must come before /users/{id_number} to avoid route conflict)
 @api_router.get("/users/search")
@@ -2164,7 +2242,7 @@ async def edit_registration(reg_id: str, updates: dict):
         if datetime.now(timezone.utc) > deadline:
             raise HTTPException(status_code=400, detail="Edit window has expired (10 minutes)")
     
-    allowed_fields = ['full_name', 'date_of_birth', 'current_class', 'section', 'email', 'phone_number', 'is_ex_student', 'date_of_leaving', 'last_class', 'current_status']
+    allowed_fields = ['full_name', 'date_of_birth', 'current_class', 'section', 'email', 'phone_number', 'is_ex_student', 'date_of_leaving', 'last_class', 'current_status', 'requested_username', 'requested_password_hash']
     update_data = {k: v for k, v in updates.items() if k in allowed_fields}
     
     if update_data:
