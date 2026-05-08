@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from 'sonner';
 import { SignOut, CheckCircle, XCircle, ChatCircle, PaperPlaneRight, PencilSimple, MagnifyingGlass } from '@phosphor-icons/react';
 import api from '../utils/api';
+import { TicketSystem } from '../components/TicketSystem';
 
 const AdminDashboard = ({ user, onLogout }) => {
   const [pendingRegs, setPendingRegs] = useState([]);
@@ -156,6 +157,7 @@ const AdminDashboard = ({ user, onLogout }) => {
             <TabsTrigger value="users" data-testid="admin-tab-users">Users ({allUsers.length})</TabsTrigger>
             <TabsTrigger value="logs" data-testid="admin-tab-logs">Action Logs</TabsTrigger>
             <TabsTrigger value="help" data-testid="admin-tab-help">Help Chat ({helpChats.length})</TabsTrigger>
+            <TabsTrigger value="tickets" data-testid="admin-tab-tickets">🎫 Tickets</TabsTrigger>
           </TabsList>
 
           {/* Pending Registrations */}

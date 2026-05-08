@@ -41,6 +41,8 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const [ws, setWs] = useState(null);
   const [wsReady, setWsReady] = useState(false);
   const [expandedComments, setExpandedComments] = useState({});
+  const [viewLikersPost, setViewLikersPost] = useState(null);
+  const [likers, setLikers] = useState([]);
   const [chatRooms, setChatRooms] = useState([]);
   const [replyingTo, setReplyingTo] = useState(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(null);
@@ -102,6 +104,11 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     }
     return () => { if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
   }, [searchQuery]);
+
+  useEffect(() => {
+    if (!viewLikersPost) return;
+    api.get(`/posts/${viewLikersPost.post_id}/likes`).then(r => setLikers(r.data)).catch(() => setLikers([]));
+  }, [viewLikersPost]);
 
   const connectWebSocket = () => {
     const wsUrl = `${WS_BASE}/${user.user_id}`;
@@ -540,6 +547,11 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                               onClick={() => navigate(`/profile/${post.user?.id_number}`)}>
                               {post.user?.username ? `@${post.user.username}` : post.user?.display_name || post.user?.id_number || 'User'}
                             </span>
+                            <span className="text-xs" style={{ color: 'var(--text-3)' }}>
+                              {post.user?.username && (post.user?.display_name || post.user?.full_name)
+                                ? post.user.display_name || post.user.full_name
+                                : ''}
+                            </span>
                             {post.user?.badges?.filter(b => b !== "Superior").map((badge, i) => (
                               <span key={i} className="px-1.5 py-0.5 rounded-full text-[10px] font-bold border border-[#111111] bg-[#FF6B6B] text-white">
                                 {badge}
@@ -549,9 +561,8 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                               <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold border border-[#111111] bg-[#2563EB] text-white">Official</span>
                             )}
                           </div>
-                          <p className="text-xs cursor-pointer hover:underline" style={{ color: 'var(--text-3)' }}
-                            onClick={() => navigate(`/profile/${post.user?.id_number}`)}>
-                            {getSecondaryIdentity(post.user) || `@${post.user?.id_number}`} &middot; {formatTime(post.created_at)}
+                          <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                            {formatTime(post.created_at)}
                           </p>
                         </div>
                       </div>
@@ -578,10 +589,16 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       <div className="flex flex-wrap gap-4 text-sm">
                         <button data-testid={`like-post-${post.post_id}`}
                           onClick={() => likePost(post.post_id, post.likes?.includes(user.user_id))}
-                          className={`flex items-center gap-1.5 font-medium ${post.likes?.includes(user.user_id) ? 'text-[#FF6B6B]' : 'text-[#4B4B4B] hover:text-[#FF6B6B]'}`}>
+                          className={`flex items-center gap-1.5 font-medium ${post.likes?.includes(user.user_id) ? '' : ''}`}
+                          style={{ color: post.likes?.includes(user.user_id) ? '#FF6B6B' : 'var(--text-3)' }}>
                           <Heart size={18} weight={post.likes?.includes(user.user_id) ? 'fill' : 'bold'} />
                           {post.likes?.length || 0}
                         </button>
+                        {post.user_id === user.user_id && post.likes?.length > 0 && (
+                          <button onClick={() => setViewLikersPost(post)} className="text-[10px] hover:underline" style={{ color: 'var(--text-3)' }}>
+                            See who liked
+                          </button>
+                        )}
                         <button onClick={() => setExpandedComments({...expandedComments, [post.post_id]: !expandedComments[post.post_id]})}
                           className="flex items-center gap-1.5 text-[#4B4B4B] hover:text-[#2563EB] font-medium">
                           <ChatCircle size={18} weight="bold" />
@@ -602,10 +619,12 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       
                       {/* Repost indicator */}
                       {post.repost_of && (
-                        <p className="text-[10px] mt-1 flex items-center gap-1 cursor-pointer hover:underline"
-                          style={{ color: 'var(--text-3)' }}
-                          onClick={() => post.repost_user_id && navigate(`/profile/${post.user?.id_number}`)}>
-                          <ArrowsClockwise size={10} weight="bold" /> Reposted from {post.repost_user_id ? `original post` : ''}
+                        <p className="text-[10px] mt-1 flex items-center gap-1 font-semibold"
+                          style={{ color: 'var(--text-3)' }}>
+                          <ArrowsClockwise size={10} weight="bold" />
+                          {post.repost_original_username
+                            ? <span>Reposted from <span style={{ color: 'var(--blue)' }}>@{post.repost_original_username}</span></span>
+                            : 'Reposted'}
                         </p>
                       )}
                       

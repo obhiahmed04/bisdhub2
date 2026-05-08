@@ -22,6 +22,7 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
   const [isFriend, setIsFriend] = useState(false);
   const [friendRequestSent, setFriendRequestSent] = useState(false);
   const [friendRequestReceived, setFriendRequestReceived] = useState(false);
+  const [followRequestSentToPrivate, setFollowRequestSentToPrivate] = useState(false);
   const [followers, setFollowers] = useState([]);
   const [following, setFollowing] = useState([]);
   const [friends, setFriends] = useState([]);
@@ -30,6 +31,8 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
   const [showFriends, setShowFriends] = useState(false);
   const [expandedComments, setExpandedComments] = useState({});
   const [likerPostId, setLikerPostId] = useState(null);
+  const [showFollowRequests, setShowFollowRequests] = useState(false);
+  const [followRequests, setFollowRequests] = useState([]);
   const [likers, setLikers] = useState([]);
   const [profileTab, setProfileTab] = useState('posts');
   const isOwnProfile = currentUser?.id_number === idNumber;
@@ -38,6 +41,11 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
     if (!likerPostId) return;
     api.get(`/posts/${likerPostId}/likes`).then(r => setLikers(r.data)).catch(() => setLikers([]));
   }, [likerPostId]);
+
+  useEffect(() => {
+    if (!isOwnProfile || !showFollowRequests) return;
+    api.get('/users/me/follow-requests').then(r => setFollowRequests(r.data)).catch(() => {});
+  }, [showFollowRequests, isOwnProfile]);
 
   useEffect(() => {
     setLoading(true); setError(null); setProfileUser(null);
@@ -93,15 +101,21 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
   };
 
   const toggleFollow = async () => {
+    if (followRequestSentToPrivate) { toast.info('Follow request already sent'); return; }
     try {
       if (isFollowing) {
         await api.delete(`/users/${idNumber}/follow`);
         setIsFollowing(false);
         toast.success('Unfollowed');
       } else {
-        await api.post(`/users/${idNumber}/follow`);
-        setIsFollowing(true);
-        toast.success('Followed');
+        const res = await api.post(`/users/${idNumber}/follow`);
+        if (res.data?.status === 'pending') {
+          setFollowRequestSentToPrivate(true);
+          toast.success('Follow request sent!');
+        } else {
+          setIsFollowing(true);
+          toast.success('Followed');
+        }
       }
       loadAll();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to update follow status'); }
@@ -250,7 +264,7 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                 {/* Name + badges */}
                 <div className="flex flex-wrap items-center gap-2 mb-1">
                   <h1 className="text-xl font-black break-words" style={{ color: 'var(--text-1)' }}>
-                    {getPublicName(profileUser)}
+                    {profileUser.full_name || profileUser.display_name || profileUser.id_number}
                   </h1>
                   {profileUser.badges?.filter(b => b !== 'Superior').map((badge, i) => (
                     <span key={i} className="px-2 py-0.5 rounded-full text-[10px] font-bold"
@@ -266,8 +280,9 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                   )}
                 </div>
 
-                <p className="text-sm font-semibold" style={{ color: 'var(--text-2)' }}>{getSecondaryIdentity(profileUser)}</p>
-                {profileUser.username && <p className="text-xs" style={{ color: 'var(--text-3)' }}>@{profileUser.username}</p>}
+                {profileUser.username && (
+                  <p className="text-sm font-bold" style={{ color: 'var(--blue)' }}>@{profileUser.username}</p>
+                )}
                 <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
                   Grade {profileUser.current_class} • {profileUser.section}
                   {profileUser.is_ex_student && ' • EX Student'}
@@ -284,16 +299,25 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                 {/* Action Buttons */}
                 <div className="flex flex-wrap gap-2 mt-3">
                   {isOwnProfile ? (
-                    <EditProfileDialog user={profileUser} onProfileUpdated={handleProfileUpdate} />
+                    <>
+                      <EditProfileDialog user={profileUser} onProfileUpdated={handleProfileUpdate} />
+                      {profileUser.follow_requests_received?.length > 0 && (
+                        <Button onClick={() => setShowFollowRequests(true)}
+                          className="rounded-xl border-2 font-bold px-4 py-2 text-sm flex items-center gap-1.5"
+                          style={{ background: 'rgba(37,99,235,0.1)', color: 'var(--blue)', borderColor: 'var(--blue)' }}>
+                          {profileUser.follow_requests_received.length} Follow Request{profileUser.follow_requests_received.length > 1 ? 's' : ''}
+                        </Button>
+                      )}
+                    </>
                   ) : (
                     <>
                       <Button onClick={toggleFollow} className="rounded-xl border-2 font-bold px-4 py-2 text-sm"
                         style={{
-                          background: isFollowing ? 'var(--bg-surface)' : 'var(--blue)',
-                          color: isFollowing ? 'var(--text-1)' : '#fff',
-                          borderColor: isFollowing ? 'var(--border-c)' : 'var(--blue)'
+                          background: isFollowing ? 'var(--bg-surface)' : followRequestSentToPrivate ? 'var(--bg-surface)' : 'var(--blue)',
+                          color: isFollowing ? 'var(--text-1)' : followRequestSentToPrivate ? 'var(--text-2)' : '#fff',
+                          borderColor: isFollowing ? 'var(--border-c)' : 'var(--border-c)'
                         }}>
-                        {isFollowing ? 'Unfollow' : 'Follow'}
+                        {isFollowing ? 'Unfollow' : followRequestSentToPrivate ? '⏳ Requested' : profileUser.is_profile_public === false ? '🔒 Request to Follow' : 'Follow'}
                       </Button>
                       {isFriend ? (
                         <Button onClick={removeFriend} className="rounded-xl border-2 font-bold px-4 py-2 text-sm flex items-center gap-1.5"
@@ -396,6 +420,7 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                 <div key={post.post_id} className="rounded-2xl border p-4"
                   style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
                   {post.serial_number && <p className="text-[10px] mb-1 font-mono" style={{ color: 'var(--text-3)' }}>#{post.serial_number}</p>}
+                <p className="text-xs font-bold mb-2" style={{ color: 'var(--blue)' }}>@{profileUser.username || profileUser.id_number}</p>
                   <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: 'var(--text-1)' }}>{post.content}</p>
                   {post.images?.length > 0 && (
                     <div className={`grid gap-2 mb-3 ${post.images.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
@@ -441,6 +466,12 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
       </div>
 
       <UserListDialog open={showFollowers} onClose={setShowFollowers} title="Followers" users={followers} />
+      {/* Follow Requests Dialog */}
+      {isOwnProfile && (
+        <div>
+          <UserListDialog open={showFollowRequests} onClose={setShowFollowRequests} title="Follow Requests" users={followRequests} />
+        </div>
+      )}
       <UserListDialog open={showFollowing} onClose={setShowFollowing} title="Following" users={following} />
       <UserListDialog open={showFriends} onClose={setShowFriends} title="Friends" users={friends} />
     </div>

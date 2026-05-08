@@ -22,6 +22,8 @@ const LoginPage = ({ onLogin }) => {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [checkOpen, setCheckOpen] = useState(false);
   const [checkId, setCheckId] = useState('');
+  const [checkPassword, setCheckPassword] = useState('');
+  const [showCheckPw, setShowCheckPw] = useState(false);
   const [checkResult, setCheckResult] = useState(null);
   const [checkLoading, setCheckLoading] = useState(false);
   const navigate = useNavigate();
@@ -62,10 +64,24 @@ const LoginPage = ({ onLogin }) => {
 
   const checkStatus = async () => {
     if (!checkId.trim()) { toast.error('Enter your ID number'); return; }
+    if (!checkPassword.trim()) { toast.error('Enter your registration password'); return; }
     setCheckLoading(true);
     try {
+      // First verify password access
+      const verifyRes = await axios.post(`${API_BASE}/auth/verify-registration-access`, {
+        id_number: checkId.trim(), password: checkPassword
+      }).catch(() => ({ data: { valid: false } }));
+      
       const res = await axios.get(`${API_BASE}/auth/check-registration/${checkId.trim()}`);
-      setCheckResult(res.data);
+      
+      if (res.data.status === 'not_found') {
+        setCheckResult({ status: 'not_found' });
+      } else if (!verifyRes.data.valid) {
+        toast.error('Incorrect password');
+        setCheckResult(null);
+      } else {
+        setCheckResult(res.data);
+      }
     } catch {
       setCheckResult({ status: 'not_found' });
     } finally { setCheckLoading(false); }
@@ -84,10 +100,12 @@ const LoginPage = ({ onLogin }) => {
 
         {/* Logo + Title */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 border-2"
-            style={{ background: 'var(--blue)', borderColor: 'var(--blue)' }}>
-            <span className="text-2xl font-black text-white">B</span>
-          </div>
+          <img src="/bisdhub-logo.png" alt="BISD HUB"
+            className="w-24 h-24 mx-auto mb-3 object-contain rounded-2xl"
+            onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }}
+          />
+          <div className="w-20 h-20 mx-auto mb-3 rounded-2xl items-center justify-center border-2 text-2xl font-black text-white"
+            style={{ background: 'var(--blue)', borderColor: 'var(--blue)', display: 'none' }}>B</div>
           <h1 className="text-2xl font-black" style={{ color: 'var(--text-1)' }}>BISD HUB</h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-3)' }}>Your school community</p>
         </div>
@@ -153,13 +171,22 @@ const LoginPage = ({ onLogin }) => {
           <div className="space-y-3 pt-1">
             <div className="flex gap-2">
               <Input value={checkId} onChange={e => setCheckId(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && checkStatus()}
-                className="rounded-xl border-2 flex-1 font-mono" placeholder="Enter your School ID"
+                className="rounded-xl border-2 font-mono" placeholder="Your School ID"
                 style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
+              <div className="relative">
+                <Input type={showCheckPw ? 'text' : 'password'} value={checkPassword} onChange={e => setCheckPassword(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && checkStatus()}
+                  className="rounded-xl border-2 pr-9" placeholder="Registration Password"
+                  style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
+                <button type="button" onClick={() => setShowCheckPw(!showCheckPw)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-3)' }}>
+                  {showCheckPw ? <EyeSlash size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
               <Button onClick={checkStatus} disabled={checkLoading}
-                className="px-4 rounded-xl border-2 font-bold"
+                className="w-full rounded-xl border-2 font-bold py-2.5"
                 style={{ background: 'var(--blue)', color: '#fff', borderColor: 'var(--blue)' }}>
-                {checkLoading ? '...' : 'Check'}
+                {checkLoading ? 'Checking...' : 'Check Status'}
               </Button>
             </div>
             {checkResult && (() => {

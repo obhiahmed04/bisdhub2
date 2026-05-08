@@ -38,7 +38,10 @@ const RegistrationPage = () => {
     return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
   };
 
+  const validateEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+
   const sendOTP = async () => {
+    if (!validateEmail(formData.email)) { toast.error('Please enter a valid email address (e.g. name@example.com)'); return; }
     setLoading(true);
     try {
       const res = await axios.post(`${API_BASE}/auth/send-otp`, { email: formData.email });
@@ -94,8 +97,14 @@ const RegistrationPage = () => {
 
   const nextStep = () => {
     if (step === 1) {
-      if (!formData.id_number || !formData.full_name || !formData.date_of_birth) {
+      if (!formData.id_number.trim() || !formData.full_name.trim() || !formData.date_of_birth) {
         toast.error('Please fill all required fields'); return;
+      }
+      if (!formData.username.trim()) {
+        toast.error('Username is required'); return;
+      }
+      if (formData.username.length < 3) {
+        toast.error('Username must be at least 3 characters'); return;
       }
     }
     if (step === 2) {
@@ -369,9 +378,9 @@ const RegistrationPage = () => {
                 <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>Email Address *</Label>
                 <div className="flex gap-2">
                   <Input type="email" value={formData.email} onChange={e => handleChange('email', e.target.value)}
-                    className="rounded-xl border-2 flex-1" placeholder="your.email@example.com"
+                    className="rounded-xl border-2 flex-1" placeholder="name@example.com"
                     disabled={emailVerified}
-                    style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
+                    style={{ borderColor: formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(formData.email) ? '#ef4444' : 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
                   {!emailVerified && (
                     <Button onClick={sendOTP} disabled={loading || !formData.email}
                       className="px-4 rounded-xl border-2 font-bold"
@@ -381,6 +390,9 @@ const RegistrationPage = () => {
                   )}
                 </div>
               </div>
+              {formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(formData.email) && (
+                  <p className="text-xs text-red-500">Invalid email format. Use: name@example.com</p>
+                )}
               {!emailVerified && (
                 <div>
                   <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>OTP Code *</Label>
