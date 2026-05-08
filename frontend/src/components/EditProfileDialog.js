@@ -83,7 +83,8 @@ const EditProfileDialog = ({ user, onProfileUpdated }) => {
     setLoading(true);
     try {
       const updateData = {};
-      if (formData.username !== (user.username || user.id_number?.toLowerCase() || '')) updateData.username = formData.username;
+      if (formData.username !== (user.username || '')) updateData.username = formData.username;
+      if (formData.is_friends_public !== (user.is_friends_public ?? true)) updateData.is_friends_public = formData.is_friends_public;
       if (formData.bio !== user.bio) updateData.bio = formData.bio;
       if (formData.profile_picture !== user.profile_picture) updateData.profile_picture = formData.profile_picture;
       if (formData.banner_image !== user.banner_image) updateData.banner_image = formData.banner_image;

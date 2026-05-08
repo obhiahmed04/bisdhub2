@@ -117,15 +117,17 @@ const NotificationBell = ({ user, ws }) => {
           
           {/* Dropdown */}
           <div data-testid="notification-dropdown"
-            className="fixed md:absolute right-2 md:right-0 top-14 md:top-full md:mt-2 z-50 w-[calc(100vw-1rem)] md:w-80 max-w-sm rounded-xl overflow-hidden"
+            className="absolute right-0 top-full mt-2 z-50 w-80 rounded-xl overflow-hidden"
             style={{ 
-              background: 'var(--bg-card, white)', 
-              border: '2px solid #111111',
-              boxShadow: '4px 4px 0px 0px rgba(17,17,17,1)'
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-c)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+              maxWidth: 'calc(100vw - 1rem)',
+              right: 'max(0px, calc(50vw - 160px) * -1)'
             }}>
             
             {/* Header */}
-            <div className="p-3 flex items-center justify-between" style={{ borderBottom: '2px solid #111111' }}>
+            <div className="p-3 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-c)' }}>
               <h3 className="text-sm font-black" style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--text-1, #111)' }}>Notifications</h3>
               {unreadCount > 0 && (
                 <button onClick={markAllRead} className="text-[10px] font-bold px-2 py-1 rounded-lg hover:bg-black/5" 
