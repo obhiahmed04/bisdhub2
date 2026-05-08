@@ -161,6 +161,7 @@ def _normalize_user_doc(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
     normalized.setdefault("is_followers_public", True)
     normalized.setdefault("is_following_public", True)
     normalized.setdefault("is_friends_public", True)
+    normalized.setdefault("show_age", True)
     normalized.setdefault("is_admin", False)
     normalized.setdefault("is_moderator", False)
     normalized.setdefault("is_banned", False)
@@ -177,6 +178,7 @@ def _normalize_user_doc(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
     normalized.setdefault("username_history", [])
     normalized.setdefault("username_last_changed", None)
     normalized.setdefault("is_friends_public", True)
+    normalized.setdefault("show_age", True)
 
     created_at = normalized.get("created_at")
     if isinstance(created_at, str):
@@ -512,6 +514,36 @@ class ModerationAction(BaseModel):
     action: str  # ban, unban, mute, unmute
     reason: Optional[str] = None
     mute_duration_hours: Optional[int] = None
+
+
+# ============= TICKET SYSTEM =============
+
+class TicketCreate(BaseModel):
+    subject: str
+    category: str = "general"  # general, registration, account, bug, other
+    message: str
+    registration_id: Optional[str] = None  # Link to registration if relevant
+
+class TicketReply(BaseModel):
+    message: str
+
+class Ticket(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    ticket_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    serial_number: Optional[int] = None
+    subject: str
+    category: str = "general"
+    status: str = "open"  # open, in_progress, resolved, closed
+    priority: str = "normal"  # low, normal, high, urgent
+    created_by: str  # user_id or "anonymous"
+    created_by_name: str
+    created_by_id_number: Optional[str] = None
+    registration_id: Optional[str] = None
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    resolved_at: Optional[str] = None
+    assigned_to: Optional[str] = None
 
 # ============= HELPER FUNCTIONS =============
 
@@ -2227,6 +2259,38 @@ async def check_registration_status(id_number: str):
         "registration": {k: v for k, v in reg.items() if k not in ['_id']}
     }
 
+# Check username availability
+@api_router.get("/auth/check-username/{username}")
+async def check_username_available(username: str):
+    clean = re.sub(r"[^a-zA-Z0-9_]+", "", username.lower())[:24]
+    if not clean or len(clean) < 2:
+        return {"available": False, "reason": "Username too short"}
+    existing = await db.users.find_one({"username": clean}, {"_id": 0, "user_id": 1})
+    existing_reg = await db.registrations.find_one({"preset_username": clean, "status": "pending"}, {"_id": 0})
+    return {"available": not existing and not existing_reg, "username": clean}
+
+# Verify registration access (for pending/rejected users to check their own status)
+@api_router.post("/auth/verify-registration-access")
+async def verify_registration_access(request: dict):
+    id_number = request.get('id_number')
+    password = request.get('password')
+    if not id_number or not password:
+        raise HTTPException(status_code=400, detail="ID number and password required")
+    reg = await db.registrations.find_one({"id_number": id_number}, {"_id": 0})
+    if not reg:
+        raise HTTPException(status_code=404, detail="Registration not found")
+    preset_hash = reg.get('preset_password_hash')
+    if not preset_hash:
+        # No password set - allow access with just ID (for older registrations)
+        return {"valid": True}
+    try:
+        valid = await asyncio.to_thread(
+            lambda: bcrypt.checkpw(password.encode("utf-8"), preset_hash.encode("utf-8"))
+        )
+        return {"valid": valid}
+    except Exception:
+        return {"valid": False}
+
 # Edit registration within 10-minute window
 @api_router.put("/auth/registration/{reg_id}")
 async def edit_registration(reg_id: str, updates: dict):
@@ -2250,6 +2314,32 @@ async def edit_registration(reg_id: str, updates: dict):
     
     updated = await db.registrations.find_one({"reg_id": reg_id}, {"_id": 0})
     return {"status": "success", "registration": updated}
+
+# Change password (for logged-in users)
+@api_router.post("/auth/change-password")
+async def change_password(request: dict, user: User = Depends(get_current_user)):
+    old_password = request.get('old_password')
+    new_password = request.get('new_password')
+    if not old_password or not new_password:
+        raise HTTPException(status_code=400, detail="Both old and new passwords required")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    
+    db_user = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "password_hash": 1})
+    if not db_user or not db_user.get("password_hash"):
+        raise HTTPException(status_code=400, detail="Account has no password set")
+    
+    valid = await asyncio.to_thread(
+        lambda: bcrypt.checkpw(old_password.encode("utf-8"), db_user["password_hash"].encode("utf-8"))
+    )
+    if not valid:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    new_hash = await asyncio.to_thread(
+        lambda: bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    )
+    await db.users.update_one({"user_id": user.user_id}, {"$set": {"password_hash": new_hash}})
+    return {"status": "success", "message": "Password changed successfully"}
 
 # Password reset - request OTP
 @api_router.post("/auth/password-reset/request")
@@ -2389,6 +2479,155 @@ async def get_available_rooms(user: User = Depends(get_current_user)):
         rooms.append({"id": "ex_students", "name": "EX Students", "color": "#a855f7"})
     
     return rooms
+
+
+# ============= TICKET SYSTEM ROUTES =============
+
+@api_router.post("/tickets")
+async def create_ticket(ticket: TicketCreate, user: User = Depends(get_current_user)):
+    last_ticket = await db.tickets.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
+    next_serial = (last_ticket.get('serial_number', 0) + 1) if last_ticket else 1
+
+    new_ticket = Ticket(
+        serial_number=next_serial,
+        subject=ticket.subject,
+        category=ticket.category,
+        registration_id=ticket.registration_id,
+        created_by=user.user_id,
+        created_by_name=user.display_name,
+        created_by_id_number=user.id_number,
+        messages=[{
+            "message_id": str(uuid.uuid4()),
+            "sender_id": user.user_id,
+            "sender_name": user.display_name,
+            "sender_type": "user",
+            "message": ticket.message,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }]
+    )
+    doc = new_ticket.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    await db.tickets.insert_one(doc)
+    return {"status": "success", "ticket_id": new_ticket.ticket_id, "serial_number": next_serial}
+
+@api_router.post("/tickets/anonymous")
+async def create_anonymous_ticket(ticket: TicketCreate, id_number: str, name: str):
+    last_ticket = await db.tickets.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
+    next_serial = (last_ticket.get('serial_number', 0) + 1) if last_ticket else 1
+
+    new_ticket = Ticket(
+        serial_number=next_serial,
+        subject=ticket.subject,
+        category=ticket.category,
+        registration_id=ticket.registration_id,
+        created_by="anonymous",
+        created_by_name=name,
+        created_by_id_number=id_number,
+        messages=[{
+            "message_id": str(uuid.uuid4()),
+            "sender_id": id_number,
+            "sender_name": name,
+            "sender_type": "user",
+            "message": ticket.message,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }]
+    )
+    doc = new_ticket.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    await db.tickets.insert_one(doc)
+    return {"status": "success", "ticket_id": new_ticket.ticket_id, "serial_number": next_serial}
+
+@api_router.get("/tickets")
+async def get_my_tickets(user: User = Depends(get_current_user)):
+    tickets = await db.tickets.find({"created_by": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return tickets
+
+@api_router.get("/tickets/{ticket_id}")
+async def get_ticket(ticket_id: str, user: User = Depends(get_current_user)):
+    ticket = await db.tickets.find_one({"ticket_id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket['created_by'] != user.user_id and not user.is_admin and not user.is_moderator:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return ticket
+
+@api_router.get("/tickets/anonymous/{ticket_id}")
+async def get_anonymous_ticket(ticket_id: str, id_number: str):
+    ticket = await db.tickets.find_one({"ticket_id": ticket_id, "created_by_id_number": id_number}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found or ID mismatch")
+    return ticket
+
+@api_router.post("/tickets/{ticket_id}/reply")
+async def reply_to_ticket(ticket_id: str, reply: TicketReply, user: User = Depends(get_current_user)):
+    ticket = await db.tickets.find_one({"ticket_id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket['created_by'] != user.user_id and not user.is_admin and not user.is_moderator:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    message = {
+        "message_id": str(uuid.uuid4()),
+        "sender_id": user.user_id,
+        "sender_name": user.display_name,
+        "sender_type": "admin" if (user.is_admin or user.is_moderator) else "user",
+        "message": reply.message,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    await db.tickets.update_one(
+        {"ticket_id": ticket_id},
+        {"$push": {"messages": message}, "$set": {"updated_at": now, "status": "in_progress" if ticket['status'] == 'open' else ticket['status']}}
+    )
+    return {"status": "success"}
+
+@api_router.post("/tickets/anonymous/{ticket_id}/reply")
+async def reply_to_anonymous_ticket(ticket_id: str, reply: TicketReply, id_number: str):
+    ticket = await db.tickets.find_one({"ticket_id": ticket_id, "created_by_id_number": id_number}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found or ID mismatch")
+
+    message = {
+        "message_id": str(uuid.uuid4()),
+        "sender_id": id_number,
+        "sender_name": ticket.get('created_by_name', id_number),
+        "sender_type": "user",
+        "message": reply.message,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.tickets.update_one(
+        {"ticket_id": ticket_id},
+        {"$push": {"messages": message}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "success"}
+
+@api_router.put("/tickets/{ticket_id}/status")
+async def update_ticket_status(ticket_id: str, status: str, priority: str = None, admin: User = Depends(verify_moderator)):
+    update = {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if priority:
+        update["priority"] = priority
+    if status == "resolved":
+        update["resolved_at"] = datetime.now(timezone.utc).isoformat()
+    await db.tickets.update_one({"ticket_id": ticket_id}, {"$set": update})
+    return {"status": "success"}
+
+@api_router.put("/tickets/{ticket_id}/assign")
+async def assign_ticket(ticket_id: str, admin: User = Depends(verify_moderator)):
+    await db.tickets.update_one(
+        {"ticket_id": ticket_id},
+        {"$set": {"assigned_to": admin.user_id, "status": "in_progress", "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "success"}
+
+@api_router.get("/admin/tickets")
+async def get_all_tickets(admin: User = Depends(verify_moderator), status: str = None, limit: int = 100):
+    query = {}
+    if status:
+        query["status"] = status
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("updated_at", -1).limit(limit).to_list(limit)
+    return tickets
 
 # Spam detection - rate limiting per user
 spam_tracker = {}
