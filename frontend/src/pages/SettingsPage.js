@@ -246,12 +246,7 @@ const SettingsPage = ({ user, onLogout, updateUser }) => {
         {/* Help & Support */}
         <Section id="support" title="Help & Support" icon={<Ticket size={18} />}>
           <div className="pt-3">
-            {user ? <TicketSystem user={user} /> : (
-              <Button onClick={() => navigate('/pending-registration')} className="w-full rounded-xl border font-bold py-2.5"
-                style={{ background: 'var(--blue)', color: '#fff', borderColor: 'var(--blue)' }}>
-                Open Support
-              </Button>
-            )}
+  <TicketSystem user={user} />
           </div>
         </Section>
 

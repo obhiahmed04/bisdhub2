@@ -137,6 +137,23 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
     } catch { toast.error('Failed to accept friend request'); }
   };
 
+  const acceptFollowRequest = async (requesterIdNumber) => {
+    try {
+      await api.post(`/users/${requesterIdNumber}/follow-request/accept`);
+      setFollowRequests(prev => prev.filter(r => r.id_number !== requesterIdNumber));
+      toast.success('Follow request accepted');
+      loadAll();
+    } catch { toast.error('Failed'); }
+  };
+
+  const rejectFollowRequest = async (requesterIdNumber) => {
+    try {
+      await api.post(`/users/${requesterIdNumber}/follow-request/reject`);
+      setFollowRequests(prev => prev.filter(r => r.id_number !== requesterIdNumber));
+      toast.success('Request declined');
+    } catch { toast.error('Failed'); }
+  };
+
   const removeFriend = async () => {
     try {
       await api.delete(`/friends/${profileUser.user_id}`);
@@ -467,9 +484,40 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
 
       <UserListDialog open={showFollowers} onClose={setShowFollowers} title="Followers" users={followers} />
       {/* Follow Requests Dialog */}
-      {isOwnProfile && (
-        <div>
-          <UserListDialog open={showFollowRequests} onClose={setShowFollowRequests} title="Follow Requests" users={followRequests} />
+      {isOwnProfile && showFollowRequests && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFollowRequests(false)}>
+          <div className="rounded-2xl border p-5 w-80 max-h-96 overflow-y-auto" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}
+            onClick={e => e.stopPropagation()}>
+            <h3 className="font-black text-lg mb-3" style={{ color: 'var(--text-1)' }}>Follow Requests ({followRequests.length})</h3>
+            {followRequests.length === 0 && <p className="text-sm" style={{ color: 'var(--text-3)' }}>No pending requests</p>}
+            <div className="space-y-3">
+              {followRequests.map(r => (
+                <div key={r.user_id} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--bg-surface)' }}>
+                  <Avatar className="w-9 h-9 shrink-0">
+                    <AvatarImage src={resolveAssetUrl(r.profile_picture)} />
+                    <AvatarFallback className="text-xs font-bold" style={{ background: 'var(--blue)', color: '#fff' }}>
+                      {(r.display_name || 'U')[0]}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-sm truncate" style={{ color: 'var(--text-1)' }}>
+                      {r.username ? `@${r.username}` : r.display_name}
+                    </p>
+                  </div>
+                  <div className="flex gap-1">
+                    <button onClick={() => acceptFollowRequest(r.id_number)}
+                      className="px-2 py-1 rounded-lg text-xs font-bold"
+                      style={{ background: 'var(--blue)', color: '#fff' }}>✓</button>
+                    <button onClick={() => rejectFollowRequest(r.id_number)}
+                      className="px-2 py-1 rounded-lg text-xs font-bold"
+                      style={{ background: 'var(--bg-surface)', color: 'var(--text-3)', border: '1px solid var(--border-c)' }}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setShowFollowRequests(false)} className="mt-4 w-full text-sm font-bold py-2 rounded-xl border"
+              style={{ background: 'var(--bg-surface)', color: 'var(--text-2)', borderColor: 'var(--border-c)' }}>Close</button>
+          </div>
         </div>
       )}
       <UserListDialog open={showFollowing} onClose={setShowFollowing} title="Following" users={following} />

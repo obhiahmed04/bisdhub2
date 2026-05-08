@@ -374,6 +374,10 @@ const AdminDashboard = ({ user, onLogout }) => {
               </div>
             </div>
           </TabsContent>
+
+          <TabsContent value="tickets">
+            <AdminTicketPanel api={require('../utils/api').default} />
+          </TabsContent>
         </Tabs>
       </div>
 
@@ -447,6 +451,157 @@ const AdminDashboard = ({ user, onLogout }) => {
           </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+};
+
+
+// ============= ADMIN TICKET PANEL =============
+const AdminTicketPanel = ({ api }) => {
+  const [tickets, setTickets] = React.useState([]);
+  const [selected, setSelected] = React.useState(null);
+  const [replyText, setReplyText] = React.useState('');
+  const [statusFilter, setStatusFilter] = React.useState('');
+  const { toast } = require('sonner');
+
+  React.useEffect(() => { loadTickets(); }, [statusFilter]);
+
+  const loadTickets = async () => {
+    try {
+      const url = statusFilter ? `/admin/tickets?status=${statusFilter}` : '/admin/tickets';
+      const r = await api.get(url);
+      setTickets(r.data);
+    } catch {}
+  };
+
+  const loadTicket = async (id) => {
+    try { const r = await api.get(`/tickets/${id}`); setSelected(r.data); } catch {}
+  };
+
+  const sendReply = async () => {
+    if (!replyText.trim()) return;
+    try {
+      await api.post(`/tickets/${selected.ticket_id}/reply`, { message: replyText });
+      setReplyText('');
+      await loadTicket(selected.ticket_id);
+      toast.success('Reply sent');
+    } catch { toast.error('Failed'); }
+  };
+
+  const updateStatus = async (status) => {
+    try {
+      await api.put(`/tickets/${selected.ticket_id}/status?status=${status}`);
+      const updated = { ...selected, status };
+      setSelected(updated);
+      loadTickets();
+      toast.success('Status updated');
+    } catch { toast.error('Failed'); }
+  };
+
+  const STATUS = {
+    open: { color: '#3b82f6', label: 'Open' },
+    in_progress: { color: '#f59e0b', label: 'In Progress' },
+    resolved: { color: '#22c55e', label: 'Resolved' },
+    closed: { color: '#6b7280', label: 'Closed' },
+  };
+
+  const fmt = (d) => {
+    if (!d) return '';
+    try { return new Date(d).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; }
+  };
+
+  if (selected) return (
+    <div style={{ color: 'var(--text-1)' }}>
+      <button onClick={() => setSelected(null)} style={{ color: 'var(--blue)' }} className="text-sm font-bold mb-4 flex items-center gap-1">
+        ← Back to all tickets
+      </button>
+      <div className="rounded-xl border p-4 mb-4" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-c)' }}>
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <div>
+            <h3 className="font-black text-base">#{selected.serial_number} {selected.subject}</h3>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+              From: {selected.created_by_name} ({selected.created_by_id_number}) · {selected.category}
+            </p>
+          </div>
+          <span className="text-xs px-2 py-1 rounded-full font-bold"
+            style={{ background: `${(STATUS[selected.status] || STATUS.open).color}20`, color: (STATUS[selected.status] || STATUS.open).color }}>
+            {(STATUS[selected.status] || STATUS.open).label}
+          </span>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {Object.entries(STATUS).map(([s, cfg]) => (
+            <button key={s} onClick={() => updateStatus(s)}
+              className="text-xs px-3 py-1.5 rounded-lg font-bold border"
+              style={{ background: selected.status === s ? cfg.color : 'transparent', color: selected.status === s ? '#fff' : cfg.color, borderColor: cfg.color }}>
+              {cfg.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-2 mb-4 max-h-72 overflow-y-auto p-1">
+        {selected.messages?.map(msg => (
+          <div key={msg.message_id} className={`flex ${msg.sender_type === 'admin' ? 'justify-end' : 'justify-start'}`}>
+            <div className="max-w-[80%] px-3 py-2 rounded-xl text-sm"
+              style={{ background: msg.sender_type === 'admin' ? 'var(--blue)' : 'var(--bg-surface)', color: msg.sender_type === 'admin' ? '#fff' : 'var(--text-1)' }}>
+              <p className="text-[10px] font-bold opacity-60 mb-0.5">
+                {msg.sender_type === 'admin' ? '👮 Admin' : `👤 ${msg.sender_name}`} · {fmt(msg.created_at)}
+              </p>
+              <p>{msg.message}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      {['open', 'in_progress'].includes(selected.status) && (
+        <div className="flex gap-2">
+          <input value={replyText} onChange={e => setReplyText(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && sendReply()}
+            placeholder="Reply to user..."
+            className="flex-1 rounded-xl border px-3 py-2 text-sm"
+            style={{ background: 'var(--bg-input)', borderColor: 'var(--border-c)', color: 'var(--text-1)' }} />
+          <button onClick={sendReply} className="px-4 rounded-xl font-bold text-sm text-white" style={{ background: 'var(--blue)' }}>
+            Send
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ color: 'var(--text-1)' }}>
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {[['', 'All'], ...Object.entries(STATUS).map(([s, c]) => [s, c.label])].map(([s, label]) => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            className="text-xs px-3 py-1.5 rounded-lg font-bold border"
+            style={{ background: statusFilter === s ? 'var(--blue)' : 'transparent', color: statusFilter === s ? '#fff' : 'var(--text-2)', borderColor: 'var(--border-c)' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tickets.length === 0 ? (
+        <p className="text-sm text-center py-12" style={{ color: 'var(--text-3)' }}>No tickets found</p>
+      ) : (
+        <div className="space-y-2">
+          {tickets.map(t => {
+            const sc = STATUS[t.status] || STATUS.open;
+            return (
+              <button key={t.ticket_id} onClick={() => loadTicket(t.ticket_id)}
+                className="w-full text-left p-3 rounded-xl border transition-colors"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-c)' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-bold text-sm truncate">#{t.serial_number} {t.subject}</p>
+                    <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+                      {t.created_by_name} · {t.category} · {fmt(t.updated_at || t.created_at)}
+                    </p>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0"
+                    style={{ background: sc.color + '20', color: sc.color }}>{sc.label}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };
