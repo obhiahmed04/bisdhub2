@@ -11,6 +11,7 @@ import ModerationPanel from './pages/ModerationPanel';
 import ManagementPanel from './pages/ManagementPanel';
 import UserProfile from './pages/UserProfile';
 import TooYoungPage from './pages/TooYoungPage';
+import NotificationsPage from './pages/NotificationsPage';
 import SettingsPage from './pages/SettingsPage';
 import FriendsPage from './pages/FriendsPage';
 import SearchResultsPage from './pages/SearchResultsPage';
@@ -64,6 +65,7 @@ function App() {
             <Route path="/login" element={token ? <Navigate to="/" /> : <LoginPage onLogin={login} />} />
             <Route path="/register" element={<RegistrationPage />} />
             <Route path="/too-young" element={<TooYoungPage />} />
+            <Route path="/notifications" element={token && !isRestricted ? <NotificationsPage user={user} /> : <Navigate to="/login" />} />
             <Route path="/pending-registration" element={<PendingRegistrationWrapper />} />
             <Route path="/banned" element={token && isBanned ? <BannedPage user={user} onLogout={logout} /> : <Navigate to="/" />} />
             <Route path="/settings" element={token && !isRestricted ? <SettingsPage user={user} onLogout={logout} updateUser={updateUser} /> : <Navigate to="/login" />} />
