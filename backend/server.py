@@ -162,6 +162,7 @@ def _normalize_user_doc(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
     normalized.setdefault("is_following_public", True)
     normalized.setdefault("is_friends_public", True)
     normalized.setdefault("show_age", True)
+    normalized.setdefault("follow_requests_received", [])
     normalized.setdefault("is_admin", False)
     normalized.setdefault("is_moderator", False)
     normalized.setdefault("is_banned", False)
@@ -179,6 +180,7 @@ def _normalize_user_doc(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
     normalized.setdefault("username_last_changed", None)
     normalized.setdefault("is_friends_public", True)
     normalized.setdefault("show_age", True)
+    normalized.setdefault("follow_requests_received", [])
 
     created_at = normalized.get("created_at")
     if isinstance(created_at, str):
@@ -901,6 +903,14 @@ async def admin_action_registration(action: AdminAction, admin: User = Depends(v
         
         user_doc = user.model_dump()
         user_doc['created_at'] = user_doc['created_at'].isoformat()
+        
+        # Anti-duplication: check if user already exists before creating
+        existing_user = await db.users.find_one({"id_number": registration["id_number"]}, {"_id": 0, "user_id": 1})
+        if existing_user:
+            # Already created (double-click scenario) - just mark as approved
+            await db.registrations.update_one({"reg_id": action.reg_id}, {"$set": {"status": "approved"}})
+            return {"status": "success", "message": "User already exists — marked as approved"}
+        
         await db.users.insert_one(user_doc)
         
         # Update registration status
@@ -1384,8 +1394,13 @@ async def get_feed(feed_type: str, user: User = Depends(get_current_user), skip:
     for post in posts:
         if isinstance(post.get('created_at'), str):
             post['created_at'] = datetime.fromisoformat(post['created_at'])
-        post_user = await db.users.find_one({"user_id": post['user_id']}, {"_id": 0, "user_id": 1, "display_name": 1, "id_number": 1, "profile_picture": 1, "badges": 1, "role": 1})
+        post_user = await db.users.find_one({"user_id": post['user_id']}, {"_id": 0, "user_id": 1, "display_name": 1, "username": 1, "id_number": 1, "profile_picture": 1, "badges": 1, "role": 1})
         post['user'] = post_user
+        # Enrich repost with original poster info
+        if post.get('repost_of') and post.get('repost_user_id') and not post.get('repost_original_username'):
+            orig_poster = await db.users.find_one({"user_id": post['repost_user_id']}, {"_id": 0, "username": 1, "display_name": 1})
+            if orig_poster:
+                post['repost_original_username'] = orig_poster.get('username') or orig_poster.get('display_name', 'Unknown')
     
     return posts
 
@@ -1415,9 +1430,10 @@ async def get_user_posts(id_number: str, user: User = Depends(get_current_user),
         post['user'] = {
             "user_id": target_user['user_id'],
             "display_name": target_user['display_name'],
+            "username": target_user.get('username'),
             "id_number": target_user['id_number'],
             "profile_picture": target_user.get('profile_picture'),
-            "badges": [b for b in target_user.get('badges', []) if b != "Superior"],  # Filter out Superior badge
+            "badges": [b for b in target_user.get('badges', []) if b != "Superior"],
             "role": target_user.get('role')
         }
     
@@ -1526,6 +1542,10 @@ async def repost(post_id: str, user: User = Depends(get_current_user)):
     last_post = await db.posts.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
     next_serial = (last_post.get('serial_number', 0) if last_post else 0) + 1
     
+    # Get original poster username for display
+    original_poster = await db.users.find_one({"user_id": original['user_id']}, {"_id": 0, "username": 1, "display_name": 1})
+    original_username = original_poster.get('username') or original_poster.get('display_name', 'Unknown') if original_poster else 'Unknown'
+
     repost_data = Post(
         user_id=user.user_id,
         content=original['content'],
@@ -1537,6 +1557,7 @@ async def repost(post_id: str, user: User = Depends(get_current_user)):
     )
     doc = repost_data.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
+    doc['repost_original_username'] = original_username
     await db.posts.insert_one(doc)
     
     # Increment share count on original
@@ -1916,19 +1937,19 @@ async def assign_role(assignment: RoleAssignment, manager: User = Depends(verify
     elif assignment.role == "Management":
         auto_badges = ["Management"]
     elif assignment.role == "Community Manager":
-        auto_badges = ["Community Manager", "Admin Supervisor"]
+        auto_badges = ["Community Manager"]
     elif assignment.role == "Chief of Staff":
-        auto_badges = ["Chief of Staff", "Admin Supervisor"]
+        auto_badges = ["Chief of Staff"]
     elif assignment.role == "Chief Administrator":
-        auto_badges = ["Chief Administrator", "Super Admin"]
+        auto_badges = ["Chief Administrator"]
     elif assignment.role == "Head Administrator":
         auto_badges = ["Head Administrator"]
     elif assignment.role == "Administrator":
         auto_badges = ["Administrator"]
     elif assignment.role == "Chief Moderator":
-        auto_badges = ["Chief Moderator", "Super Mod"]
+        auto_badges = ["Chief Moderator"]
     elif assignment.role == "Head Moderator":
-        auto_badges = ["Head Moderator", "Super Mod"]
+        auto_badges = ["Head Moderator"]
     elif assignment.role == "Moderator":
         auto_badges = ["Moderator"]
     
