@@ -1122,32 +1122,63 @@ async def get_user_profile(id_number: str, user: User = Depends(get_current_user
 async def follow_user(id_number: str, user: User = Depends(get_current_user)):
     if id_number == user.id_number:
         raise HTTPException(status_code=400, detail="Cannot follow yourself")
-    
     target_user = await db.users.find_one({"id_number": id_number}, {"_id": 0})
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    # Add to following list
-    await db.users.update_one(
-        {"user_id": user.user_id},
-        {"$addToSet": {"following": target_user['user_id']}}
-    )
-    
-    # Add to followers list
-    await db.users.update_one(
-        {"user_id": target_user['user_id']},
-        {"$addToSet": {"followers": user.user_id}}
-    )
-    
-    # Send notification
-    await send_notification(
-        target_user['user_id'],
-        "follow",
-        user.user_id,
-        f"{user.display_name} started following you"
-    )
-    
+
+    # If private profile, create follow request instead
+    if not target_user.get("is_profile_public", True):
+        already_following = user.user_id in target_user.get("followers", [])
+        if already_following:
+            raise HTTPException(status_code=400, detail="Already following")
+        already_requested = user.user_id in target_user.get("follow_requests_received", [])
+        if already_requested:
+            raise HTTPException(status_code=400, detail="Follow request already sent")
+        await db.users.update_one(
+            {"user_id": target_user["user_id"]},
+            {"$addToSet": {"follow_requests_received": user.user_id}}
+        )
+        await send_notification(target_user["user_id"], "follow_request", user.user_id,
+            f"{user.display_name} sent you a follow request")
+        return {"status": "pending", "message": "Follow request sent"}
+
+    await db.users.update_one({"user_id": user.user_id}, {"$addToSet": {"following": target_user["user_id"]}})
+    await db.users.update_one({"user_id": target_user["user_id"]}, {"$addToSet": {"followers": user.user_id}})
+    await send_notification(target_user["user_id"], "follow", user.user_id, f"{user.display_name} started following you")
     return {"status": "success", "message": "User followed"}
+
+@api_router.post("/users/{id_number}/follow-request/accept")
+async def accept_follow_request(id_number: str, user: User = Depends(get_current_user)):
+    requester = await db.users.find_one({"id_number": id_number}, {"_id": 0, "user_id": 1, "display_name": 1})
+    if not requester:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"user_id": user.user_id}, {
+        "$pull": {"follow_requests_received": requester["user_id"]},
+        "$addToSet": {"followers": requester["user_id"]}
+    })
+    await db.users.update_one({"user_id": requester["user_id"]}, {"$addToSet": {"following": user.user_id}})
+    await send_notification(requester["user_id"], "follow", user.user_id, f"{user.display_name} accepted your follow request")
+    return {"status": "success"}
+
+@api_router.post("/users/{id_number}/follow-request/reject")
+async def reject_follow_request(id_number: str, user: User = Depends(get_current_user)):
+    requester = await db.users.find_one({"id_number": id_number}, {"_id": 0, "user_id": 1})
+    if not requester:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"user_id": user.user_id}, {"$pull": {"follow_requests_received": requester["user_id"]}})
+    return {"status": "success"}
+
+@api_router.get("/users/me/follow-requests")
+async def get_my_follow_requests(user: User = Depends(get_current_user)):
+    me = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "follow_requests_received": 1})
+    request_ids = me.get("follow_requests_received", []) if me else []
+    if not request_ids:
+        return []
+    requesters = await db.users.find(
+        {"user_id": {"$in": request_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "username": 1, "id_number": 1, "profile_picture": 1}
+    ).to_list(100)
+    return requesters
 
 @api_router.delete("/users/{id_number}/follow")
 async def unfollow_user(id_number: str, user: User = Depends(get_current_user)):
