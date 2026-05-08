@@ -29,8 +29,15 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
   const [showFollowing, setShowFollowing] = useState(false);
   const [showFriends, setShowFriends] = useState(false);
   const [expandedComments, setExpandedComments] = useState({});
+  const [likerPostId, setLikerPostId] = useState(null);
+  const [likers, setLikers] = useState([]);
   const [profileTab, setProfileTab] = useState('posts');
   const isOwnProfile = currentUser?.id_number === idNumber;
+
+  useEffect(() => {
+    if (!likerPostId) return;
+    api.get(`/posts/${likerPostId}/likes`).then(r => setLikers(r.data)).catch(() => setLikers([]));
+  }, [likerPostId]);
 
   useEffect(() => {
     setLoading(true); setError(null); setProfileUser(null);
@@ -202,6 +209,8 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg-base)' }}>
+      {/* Likers dialog */}
+      <UserListDialog open={!!likerPostId} onClose={() => setLikerPostId(null)} title="Liked by" users={likers} />
       <div className="max-w-3xl mx-auto">
         {/* Top Bar */}
         <div className="p-4">
@@ -262,6 +271,14 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                 <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
                   Grade {profileUser.current_class} • {profileUser.section}
                   {profileUser.is_ex_student && ' • EX Student'}
+                  {(profileUser.show_age !== false) && profileUser.date_of_birth && (() => {
+                    try {
+                      const [d, m, y] = profileUser.date_of_birth.split('/');
+                      const dob = new Date(`${y}-${m}-${d}`);
+                      const age = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+                      return !isNaN(age) && age > 0 ? ` • Age ${age}` : '';
+                    } catch { return ''; }
+                  })()}
                 </p>
 
                 {/* Action Buttons */}
@@ -395,6 +412,12 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                       <Heart size={18} weight={post.likes?.includes(currentUser?.user_id) ? 'fill' : 'bold'} />
                       {post.likes?.length || 0}
                     </button>
+                    {isOwnProfile && (post.likes?.length > 0) && (
+                      <button onClick={() => setLikerPostId(post.post_id)}
+                        className="text-[10px] hover:underline" style={{ color: 'var(--text-3)' }}>
+                        See who liked
+                      </button>
+                    )}
                     <button onClick={() => setExpandedComments(p => ({ ...p, [post.post_id]: !p[post.post_id] }))}
                       className="flex items-center gap-1.5 font-medium"
                       style={{ color: 'var(--text-3)' }}>

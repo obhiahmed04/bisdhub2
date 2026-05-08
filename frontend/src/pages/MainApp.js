@@ -510,7 +510,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
 
               {/* Feed Tabs */}
               <Tabs value={feedType} onValueChange={setFeedType} className="mb-3">
-                <TabsList className="bg-white border-2 border-[#111111] rounded-xl p-1">
+                <TabsList className="rounded-xl p-1 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
                   <TabsTrigger value="official" data-testid="feed-official">Official</TabsTrigger>
                   <TabsTrigger value="feed" data-testid="feed-public">Public</TabsTrigger>
                   <TabsTrigger value="following" data-testid="feed-following">Following</TabsTrigger>
@@ -527,7 +527,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                     </div>
                   )}
                   {posts.map((post) => (
-                    <div key={post.post_id} data-testid={`post-${post.post_id}`} className="bg-white border-2 border-[#111111] shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] rounded-xl p-4">
+                    <div key={post.post_id} data-testid={`post-${post.post_id}`} className="rounded-xl p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
                       <div className="flex items-start gap-3 mb-3">
                         <Avatar className="border-2 border-[#111111] cursor-pointer hover:opacity-80 w-10 h-10"
                           onClick={() => navigate(`/profile/${post.user?.id_number}`)}>
@@ -538,7 +538,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-bold text-sm cursor-pointer hover:underline"
                               onClick={() => navigate(`/profile/${post.user?.id_number}`)}>
-                              {getPublicName(post.user)}
+                              {post.user?.username ? `@${post.user.username}` : post.user?.display_name || post.user?.id_number || 'User'}
                             </span>
                             {post.user?.badges?.filter(b => b !== "Superior").map((badge, i) => (
                               <span key={i} className="px-1.5 py-0.5 rounded-full text-[10px] font-bold border border-[#111111] bg-[#FF6B6B] text-white">
@@ -602,8 +602,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       
                       {/* Repost indicator */}
                       {post.repost_of && (
-                        <p className="text-[10px] text-[#4B4B4B] mt-1 flex items-center gap-1">
-                          <ArrowsClockwise size={10} weight="bold" /> Reposted
+                        <p className="text-[10px] mt-1 flex items-center gap-1 cursor-pointer hover:underline"
+                          style={{ color: 'var(--text-3)' }}
+                          onClick={() => post.repost_user_id && navigate(`/profile/${post.user?.id_number}`)}>
+                          <ArrowsClockwise size={10} weight="bold" /> Reposted from {post.repost_user_id ? `original post` : ''}
                         </p>
                       )}
                       

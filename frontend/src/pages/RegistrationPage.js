@@ -60,7 +60,9 @@ const RegistrationPage = () => {
 
   const handleSubmit = async () => {
     if (!emailVerified) { toast.error('Please verify your email first'); return; }
-    if (formData.password && formData.password !== formData.confirm_password) {
+    if (!formData.username.trim()) { toast.error('Username is required'); return; }
+    if (!formData.password) { toast.error('Password is required'); return; }
+    if (formData.password !== formData.confirm_password) {
       toast.error('Passwords do not match'); return;
     }
     if (formData.password && formData.password.length < 6) {
@@ -68,6 +70,11 @@ const RegistrationPage = () => {
     }
     setLoading(true);
     try {
+      // Check username uniqueness
+      if (formData.username) {
+        const checkRes = await axios.get(`${API_BASE}/auth/check-username/${formData.username}`);
+        if (!checkRes.data.available) { toast.error('Username already taken, please choose another'); setLoading(false); return; }
+      }
       const payload = { ...formData };
       delete payload.confirm_password;
       if (!payload.password) delete payload.password;
@@ -196,12 +203,12 @@ const RegistrationPage = () => {
               </div>
               <div>
                 <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>
-                  Username <span style={{ color: 'var(--text-3)' }}>(Optional — can be set later)</span>
+                  Username *
                 </Label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold" style={{ color: 'var(--text-3)' }}>@</span>
                   <Input value={formData.username} onChange={e => handleChange('username', e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                    className="rounded-xl border-2 pl-8" placeholder="your_username"
+                    className="rounded-xl border-2 pl-8" placeholder="your_username (required)"
                     style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
                 </div>
               </div>
@@ -400,15 +407,15 @@ const RegistrationPage = () => {
               {/* Password */}
               <div className="pt-2 border-t" style={{ borderColor: 'var(--border-c)' }}>
                 <p className="text-xs font-semibold mb-3" style={{ color: 'var(--text-3)' }}>
-                  Set a password now, or leave blank — admin will assign one on approval.
+                  Choose a password. You will use this to login after approval.
                 </p>
                 <div className="space-y-3">
                   <div>
-                    <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>Password (Optional)</Label>
+                    <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>Password *</Label>
                     <div className="relative">
                       <Input type={showPassword ? 'text' : 'password'} value={formData.password}
                         onChange={e => handleChange('password', e.target.value)}
-                        className="rounded-xl border-2 pr-10" placeholder="Min. 6 characters"
+                        className="rounded-xl border-2 pr-10" placeholder="Choose a password (min. 6 characters)"
                         style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
                       <button type="button" onClick={() => setShowPassword(!showPassword)}
                         className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-3)' }}>
@@ -416,8 +423,7 @@ const RegistrationPage = () => {
                       </button>
                     </div>
                   </div>
-                  {formData.password && (
-                    <div>
+                  <div>
                       <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>Confirm Password *</Label>
                       <div className="relative">
                         <Input type={showConfirmPassword ? 'text' : 'password'} value={formData.confirm_password}

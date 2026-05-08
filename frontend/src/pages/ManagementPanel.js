@@ -28,7 +28,7 @@ const ManagementPanel = ({ user, onLogout }) => {
   const [actionLogs, setActionLogs] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [newRole, setNewRole] = useState('');
-  const [newBadges, setNewBadges] = useState('');
+
   const [searchLogs, setSearchLogs] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const navigate = useNavigate();
@@ -65,12 +65,12 @@ const ManagementPanel = ({ user, onLogout }) => {
       await api.post('/management/assign-role', {
         user_id: selectedUser.user_id,
         role: newRole,
-        badges: newBadges.split(',').map(b => b.trim()).filter(Boolean)
+        badges: []  // auto-assigned by backend based on role
       });
       toast.success('Role assigned successfully');
       setSelectedUser(null);
       setNewRole('');
-      setNewBadges('');
+
       loadAllUsers();
       loadActionLogs();
     } catch (error) {
@@ -132,16 +132,6 @@ const ManagementPanel = ({ user, onLogout }) => {
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-bold uppercase tracking-wider mb-2 block">Badges (comma separated)</label>
-                    <Input
-                      value={newBadges}
-                      onChange={(e) => setNewBadges(e.target.value)}
-                      placeholder="e.g., Administrator, Early Supporter"
-                      className="border-2 border-[#111111] rounded-xl px-4 py-2 shadow-[2px_2px_0px_0px_rgba(17,17,17,1)]"
-                    />
                   </div>
 
                   <div className="flex gap-2">
