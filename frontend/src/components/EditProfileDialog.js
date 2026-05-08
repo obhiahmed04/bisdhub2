@@ -11,7 +11,7 @@ import api, { resolveAssetUrl } from '../utils/api';
 const EditProfileDialog = ({ user, onProfileUpdated }) => {
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState({
-    username: user.username || user.id_number?.toLowerCase() || '',
+    username: user.username || '',
     bio: user.bio || '',
     profile_picture: user.profile_picture || '',
     banner_image: user.banner_image || '',
@@ -41,7 +41,7 @@ const EditProfileDialog = ({ user, onProfileUpdated }) => {
     setOpen(isOpen);
     if (isOpen) {
       setFormData({
-        username: user.username || user.id_number?.toLowerCase() || '',
+        username: user.username || '',
         bio: user.bio || '',
         profile_picture: user.profile_picture || '',
         banner_image: user.banner_image || '',
@@ -164,11 +164,40 @@ const EditProfileDialog = ({ user, onProfileUpdated }) => {
 
             {/* Display Name - Read Only */}
             <div>
-              <label className="text-xs font-bold uppercase tracking-wider mb-2 block">Display Name</label>
+              <label className="text-xs font-bold uppercase tracking-wider mb-2 block">Full Name (read-only)</label>
               <p className="text-sm px-3 py-2 rounded-xl" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-1)' }}>
-                {user.display_name}
+                {user.full_name || user.display_name}
               </p>
-              <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)' }}>Name can only be changed by an admin. Contact support.</p>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)' }}>Contact admin to change your name or school ID.</p>
+            </div>
+
+            {/* Username */}
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wider mb-2 block">
+                Username {usernameCooldownDays ? <span style={{ color: '#f59e0b' }}>({usernameCooldownDays} day(s) until next change)</span> : ''}
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-sm" style={{ color: 'var(--text-3)' }}>@</span>
+                <input
+                  value={formData.username}
+                  onChange={(e) => !usernameCooldownDays && setFormData({ ...formData, username: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') })}
+                  disabled={!!usernameCooldownDays}
+                  placeholder="your_username"
+                  className="w-full pl-8 pr-3 py-2 rounded-xl text-sm border-2"
+                  style={{
+                    background: usernameCooldownDays ? 'var(--bg-surface)' : 'var(--bg-input)',
+                    borderColor: 'var(--border-c)',
+                    color: 'var(--text-1)',
+                    opacity: usernameCooldownDays ? 0.7 : 1
+                  }}
+                />
+              </div>
+              {user.username_history?.length > 0 && (
+                <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)' }}>
+                  Previous: {user.username_history.map(u => `@${u}`).join(', ')}
+                </p>
+              )}
+              <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>Can be changed once every 7 days</p>
             </div>
 
             {/* Bio */}
@@ -185,8 +214,9 @@ const EditProfileDialog = ({ user, onProfileUpdated }) => {
               <h3 className="font-bold text-xs">Privacy Settings</h3>
               {[
                 { key: 'is_profile_public', label: 'Public Profile', desc: 'Anyone can view your profile' },
-                { key: 'is_followers_public', label: 'Public Followers List', desc: 'Anyone can see who follows you' },
-                { key: 'is_following_public', label: 'Public Following List', desc: 'Anyone can see who you follow' },
+                { key: 'is_followers_public', label: 'Public Followers', desc: 'Anyone can see who follows you' },
+                { key: 'is_following_public', label: 'Public Following', desc: 'Anyone can see who you follow' },
+                { key: 'is_friends_public', label: 'Public Friends List', desc: 'Anyone can see your friends list' },
               ].map(item => (
                 <div key={item.key} className="flex items-center justify-between">
                   <div>
