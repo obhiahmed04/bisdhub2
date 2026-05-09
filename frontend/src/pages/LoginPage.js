@@ -96,7 +96,7 @@ const LoginPage = ({ onLogin }) => {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'var(--bg-base)' }}>
-      <div className="w-full max-w-sm">
+      <div className="w-full max-w-md">
 
         {/* Logo + Title */}
         <div className="text-center mb-8">
@@ -112,16 +112,16 @@ const LoginPage = ({ onLogin }) => {
 
         {/* Login Card */}
         <div className="rounded-2xl p-6 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
-          <h2 className="text-lg font-black mb-5" style={{ color: 'var(--text-1)' }}>Sign In</h2>
+          <h2 className="text-xl font-black mb-5" style={{ color: 'var(--text-1)' }}>Sign In</h2>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>School ID Number</Label>
+              <Label className="text-sm font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>School ID Number</Label>
               <Input value={idNumber} onChange={e => setIdNumber(e.target.value)}
-                className="rounded-xl border-2 font-mono" placeholder="Your school ID"
+                className="rounded-xl border-2 font-mono h-12 text-base" placeholder="Your school ID"
                 style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
             </div>
             <div>
-              <Label className="text-xs font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>Password</Label>
+              <Label className="text-sm font-bold uppercase tracking-wide mb-1.5 block" style={{ color: 'var(--text-2)' }}>Password</Label>
               <div className="relative">
                 <Input type={showPassword ? 'text' : 'password'} value={password}
                   onChange={e => setPassword(e.target.value)}
@@ -162,16 +162,16 @@ const LoginPage = ({ onLogin }) => {
 
       {/* Check Status Dialog */}
       <Dialog open={checkOpen} onOpenChange={setCheckOpen}>
-        <DialogContent className="max-w-sm rounded-2xl border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
+        <DialogContent className="max-w-md rounded-2xl border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
           <DialogHeader>
-            <DialogTitle className="font-black text-lg flex items-center gap-2" style={{ color: 'var(--text-1)' }}>
+            <DialogTitle className="font-black text-xl flex items-center gap-2" style={{ color: 'var(--text-1)' }}>
               <MagnifyingGlass size={18} /> Check Registration
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 pt-1">
             <div className="flex gap-2">
               <Input value={checkId} onChange={e => setCheckId(e.target.value)}
-                className="rounded-xl border-2 font-mono" placeholder="Your School ID"
+                className="rounded-xl border-2 font-mono h-12 text-base" placeholder="Your School ID"
                 style={{ borderColor: 'var(--border-c)', background: 'var(--bg-input)', color: 'var(--text-1)' }} />
               <div className="relative">
                 <Input type={showCheckPw ? 'text' : 'password'} value={checkPassword} onChange={e => setCheckPassword(e.target.value)}
@@ -184,7 +184,7 @@ const LoginPage = ({ onLogin }) => {
                 </button>
               </div>
               <Button onClick={checkStatus} disabled={checkLoading}
-                className="w-full rounded-xl border-2 font-bold py-2.5"
+                className="w-full rounded-xl border-2 font-bold py-3 text-base"
                 style={{ background: 'var(--blue)', color: '#fff', borderColor: 'var(--blue)' }}>
                 {checkLoading ? 'Checking...' : 'Check Status'}
               </Button>
@@ -195,9 +195,9 @@ const LoginPage = ({ onLogin }) => {
                 <div className="rounded-xl p-4 border" style={{ background: cfg.bg, borderColor: cfg.color }}>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xl">{cfg.icon}</span>
-                    <span className="font-black text-sm" style={{ color: cfg.color }}>{cfg.label}</span>
+                    <span className="font-black text-base" style={{ color: cfg.color }}>{cfg.label}</span>
                   </div>
-                  <p className="text-sm" style={{ color: 'var(--text-2)' }}>{cfg.msg}</p>
+                  <p className="text-base font-semibold mt-1" style={{ color: 'var(--text-2)' }}>{cfg.msg}</p>
                   {checkResult.status === 'rejected' && checkResult.rejection_reason && (
                     <p className="text-xs mt-1 font-semibold" style={{ color: cfg.color }}>Reason: {checkResult.rejection_reason}</p>
                   )}
@@ -208,13 +208,13 @@ const LoginPage = ({ onLogin }) => {
                     <button onClick={() => {
                       setCheckOpen(false);
                       navigate('/pending-registration', { state: { regId: checkResult.reg_id, registration: checkResult.registration, serialNumber: checkResult.serial_number, editableUntil: checkResult.editable_until }});
-                    }} className="text-xs font-bold hover:underline mt-2 block" style={{ color: cfg.color }}>
+                    }} className="text-sm font-bold hover:underline mt-2 block" style={{ color: cfg.color }}>
                       View registration details →
                     </button>
                   )}
                   {checkResult.status === 'approved' && (
                     <button onClick={() => setCheckOpen(false)}
-                      className="text-xs font-bold hover:underline mt-2 block" style={{ color: cfg.color }}>
+                      className="text-sm font-bold hover:underline mt-2 block" style={{ color: cfg.color }}>
                       Go to login →
                     </button>
                   )}
@@ -222,7 +222,7 @@ const LoginPage = ({ onLogin }) => {
               );
             })()}
             {!checkResult && (
-              <p className="text-xs text-center" style={{ color: 'var(--text-3)' }}>Enter your School ID to check if your registration was received.</p>
+              <p className="text-sm text-center" style={{ color: 'var(--text-3)' }}>Enter your School ID to check if your registration was received.</p>
             )}
           </div>
         </DialogContent>
@@ -230,9 +230,9 @@ const LoginPage = ({ onLogin }) => {
 
       {/* Password Reset Dialog */}
       <Dialog open={resetOpen} onOpenChange={open => { setResetOpen(open); if (!open) { setResetStep(1); setResetId(''); setResetOtp(''); setNewPassword(''); } }}>
-        <DialogContent className="max-w-sm rounded-2xl border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
+        <DialogContent className="max-w-md rounded-2xl border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
           <DialogHeader>
-            <DialogTitle className="font-black text-lg flex items-center gap-2" style={{ color: 'var(--text-1)' }}>
+            <DialogTitle className="font-black text-xl flex items-center gap-2" style={{ color: 'var(--text-1)' }}>
               <Key size={18} weight="bold" /> Reset Password
             </DialogTitle>
           </DialogHeader>

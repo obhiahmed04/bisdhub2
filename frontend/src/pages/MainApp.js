@@ -169,10 +169,26 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     };
   };
 
-  const loadFeed = async () => {
+  const [feedPage, setFeedPage] = useState(0);
+  const [hasMorePosts, setHasMorePosts] = useState(true);
+  const FEED_LIMIT = 50;
+
+  const loadFeed = async (reset = true) => {
     try {
-      const response = await api.get(`/posts/feed/${feedType}`);
-      setPosts(response.data);
+      const skip = reset ? 0 : feedPage * FEED_LIMIT;
+      const response = await api.get(`/posts/feed/${feedType}?skip=${skip}&limit=${FEED_LIMIT}`);
+      const newPosts = (response.data || []).filter(p => !p.repost_of);
+      if (reset) {
+        setPosts(newPosts);
+        setFeedPage(1);
+      } else {
+        setPosts(prev => {
+          const ids = new Set(prev.map(p => p.post_id));
+          return [...prev, ...newPosts.filter(p => !ids.has(p.post_id))];
+        });
+        setFeedPage(prev => prev + 1);
+      }
+      setHasMorePosts(response.data.length === FEED_LIMIT);
     } catch (error) {
       console.error('Failed to load feed');
     }
@@ -251,14 +267,28 @@ const MainApp = ({ user, onLogout, updateUser }) => {
 
   const sendDMMessage = async () => {
     if ((!newDMMessage.trim() && dmAttachImages.length === 0) || !activeDM) return;
-    try {
-      await api.post(`/dm/${activeDM}/send`, { content: newDMMessage || '📎', images: dmAttachImages });
-      setNewDMMessage('');
-      setDmAttachImages([]);
-      loadDMMessages();
-      loadDMConversations();
-    } catch (error) {
-      toast.error('Failed to send message');
+    const content = newDMMessage.trim() || '📎';
+    const images = [...dmAttachImages];
+    setNewDMMessage('');
+    setDmAttachImages([]);
+    
+    // Try WebSocket first (realtime); fall back to REST
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'dm',
+        receiver_id: activeDM,
+        content,
+        images
+      }));
+    } else {
+      try {
+        await api.post(`/dm/${activeDM}/send`, { content, images });
+        loadDMMessages();
+        loadDMConversations();
+      } catch {
+        toast.error('Failed to send message');
+        setNewDMMessage(content);
+      }
     }
   };
 
@@ -313,10 +343,12 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const repostPost = async (postId) => {
     try {
       await api.post(`/posts/${postId}/repost`);
-      toast.success('Post reposted!');
-      loadFeed();
+      toast.success('Reposted! View it in your profile Reposts tab.');
+      loadFeed(true);
     } catch (error) {
-      toast.error('Failed to repost');
+      const msg = error.response?.data?.detail || 'Failed to repost';
+      if (msg.includes('already reposted')) toast.info('You already reposted this post.');
+      else toast.error(msg);
     }
   };
 
@@ -572,7 +604,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       {/* Voice Note */}
                       {post.voice_url && (
                         <div className="mb-3 bg-[#F5F5F5] border-2 border-[#111111] rounded-xl px-3 py-2">
-                          <VoicePlayer src={resolveAssetUrl(post.voice_url)} />
+                          <VoicePlayer src={resolveAssetUrl(post.voice_url)} dark={false} />
                         </div>
                       )}
                       
@@ -635,6 +667,15 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                   ))}
                 </div>
               </ScrollArea>
+              {hasMorePosts && (
+                <div className="p-3 text-center">
+                  <button onClick={() => loadFeed(false)}
+                    className="px-6 py-2 rounded-xl text-sm font-bold border-2 border-[#111111] bg-white hover:bg-[#f5f5f5] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)]"
+                    style={{ color: 'var(--text-1)' }}>
+                    Load more posts
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Right Sidebar - Search */}
@@ -671,8 +712,11 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                               <AvatarFallback className="text-xs">{getPublicName(u)?.[1] || 'U'}</AvatarFallback>
                             </Avatar>
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-bold truncate">{getPublicName(u)}</p>
-                              <p className="text-[10px] text-[#4B4B4B]">{getSecondaryIdentity(u) || `@${u.id_number}`}</p>
+                              <p className="text-sm font-bold truncate">
+                                {getPublicName(u)}
+                                {u.profile_locked && <span className="ml-1 text-[10px] opacity-60">🔒</span>}
+                              </p>
+                              <p className="text-[10px] text-[#4B4B4B]">{u.profile_locked ? 'Private profile' : (getSecondaryIdentity(u) || `@${u.id_number}`)}</p>
                             </div>
                           </div>
                         ))}
@@ -757,7 +801,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                             <p className="text-[10px] font-bold opacity-70 mb-0.5">{getPublicName(msg.user)}</p>
                           )}
                           <p className="text-sm">{msg.content}</p>
-                          {msg.voice_url && <VoicePlayer src={`${API_BASE}${msg.voice_url}`} />}
+                          {msg.voice_url && <VoicePlayer src={resolveAssetUrl(msg.voice_url)} dark={msg.sender_id === user.user_id} />}
                           <p className={`text-[10px] mt-0.5 ${msg.user_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.user_id !== user.user_id ? 'var(--text-3)' : undefined }}>
                             {formatChatTime(msg.created_at)}
                           </p>
@@ -839,11 +883,12 @@ const MainApp = ({ user, onLogout, updateUser }) => {
         {/* DMs */}
         {activeTab === 'dm' && (
           <div className="flex-1 flex overflow-hidden">
-            <div className="w-72 bg-white border-r-2 border-[#111111] p-3 flex-shrink-0">
-              <h2 className="text-sm font-black mb-3" style={{ fontFamily: 'Outfit, sans-serif' }}>Direct Messages</h2>
+            <div className="w-72 border-r-2 border-[#111111] p-3 flex-shrink-0 flex flex-col" style={{ background: 'var(--bg-card)' }}>
+              <h2 className="text-sm font-black mb-3" style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--text-1)' }}>Direct Messages</h2>
               <Input data-testid="dm-search-input" value={dmSearchQuery} onChange={(e) => setDmSearchQuery(e.target.value)}
-                placeholder="Search conversations..." className="border-2 border-[#111111] rounded-xl px-3 py-2 mb-3 shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] text-xs" />
-              <ScrollArea className="h-full">
+                placeholder="Search conversations..." className="border border-[#D1D1D1] rounded-xl px-3 py-2 mb-3 text-xs"
+                style={{ background: 'var(--bg-input)', color: 'var(--text-1)' }} />
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="space-y-1.5">
                   {filteredDMConversations.map((conv) => (
                     <button key={conv.user?.user_id} data-testid={`dm-conversation-${conv.user?.user_id}`}
@@ -878,10 +923,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
             </div>
 
             {activeDM ? (
-              <div className="flex-1 flex flex-col p-4">
-                <div className="bg-white border-2 border-[#111111] rounded-xl shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] flex-1 flex flex-col p-4 overflow-hidden">
+              <div className="flex-1 flex flex-col p-3 min-w-0 overflow-hidden">
+                <div className="rounded-xl flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-c)' }}>
                   {/* DM Header with Call Buttons */}
-                  <div className="flex items-center gap-3 pb-3 mb-3 border-b border-[#D1D1D1]">
+                  <div className="flex items-center gap-3 pb-3 mb-3 px-4 pt-4" style={{ borderBottom: "1px solid var(--border-c)" }}>
                     <Avatar className="w-8 h-8 border border-[#111111] cursor-pointer"
                       onClick={() => activeDMUser?.id_number && navigate(`/profile/${activeDMUser.id_number}`)}>
                       <AvatarImage src={resolveAssetUrl(activeDMUser?.profile_picture)} />
@@ -903,8 +948,8 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                     </div>
                   </div>
 
-                  <ScrollArea className="flex-1 mb-3">
-                    <div className="space-y-3">
+                  <ScrollArea className="flex-1 mb-3" style={{ minHeight: 0 }}>
+                    <div className="space-y-3 p-1">
                       {dmMessages.map((msg) => (
                         <div key={msg.dm_id} className={`flex ${msg.sender_id === user.user_id ? 'justify-end' : 'justify-start'}`}>
                           <div className={`max-w-[75%] ${
@@ -920,7 +965,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                                 ))}
                               </div>
                             )}
-                            {msg.voice_url && <VoicePlayer src={`${API_BASE}${msg.voice_url}`} />}
+                            {msg.voice_url && <VoicePlayer src={resolveAssetUrl(msg.voice_url)} dark={msg.sender_id === user.user_id} />}
                             <p className={`text-[10px] mt-0.5 ${msg.sender_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.sender_id !== user.user_id ? 'var(--text-3)' : undefined }}>
                               {formatChatTime(msg.created_at)}
                             </p>
@@ -943,7 +988,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       ))}
                     </div>
                   )}
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 px-4 pb-4">
                     <VoiceRecorder onSend={sendVoiceDM} compact />
                     <button onClick={() => dmFileRef.current?.click()} data-testid="dm-attach-image"
                       className="p-2 rounded-lg border-2 border-[#111111] bg-white text-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]">
