@@ -120,28 +120,68 @@ const VoiceRecorder = ({ onSend, compact = false }) => {
   );
 };
 
-const VoicePlayer = ({ src }) => {
+const VoicePlayer = ({ src, dark = true }) => {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  if (!src) return null;
 
   const toggle = () => {
     if (!audioRef.current) return;
     if (playing) audioRef.current.pause();
-    else audioRef.current.play();
+    else audioRef.current.play().catch(() => {});
     setPlaying(!playing);
   };
 
+  const handleTimeUpdate = () => {
+    if (!audioRef.current) return;
+    const dur = audioRef.current.duration || 1;
+    setProgress((audioRef.current.currentTime / dur) * 100);
+    setCurrentTime(Math.floor(audioRef.current.currentTime));
+  };
+
+  const handleLoaded = () => {
+    if (audioRef.current) setDuration(Math.floor(audioRef.current.duration) || 0);
+  };
+
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  const track = dark ? 'rgba(255,255,255,0.2)' : 'var(--bg-surface, #eee)';
+  const fill = dark ? 'rgba(255,255,255,0.8)' : '#2563EB';
+  const btn = dark ? 'rgba(255,255,255,0.2)' : 'var(--bg-surface, #e5e7eb)';
+  const btnHov = dark ? 'rgba(255,255,255,0.3)' : '#e5e7eb';
+  const iconColor = dark ? '#fff' : 'var(--text-1, #111)';
+  const timeColor = dark ? 'rgba(255,255,255,0.6)' : 'var(--text-3, #666)';
+
   return (
-    <div className="flex items-center gap-2 py-1">
+    <div className="flex items-center gap-2 py-1 min-w-[140px]">
       <audio ref={audioRef} src={src}
-        onEnded={() => { setPlaying(false); setProgress(0); }}
-        onTimeUpdate={() => { if (audioRef.current) setProgress((audioRef.current.currentTime / (audioRef.current.duration || 1)) * 100); }} />
-      <button onClick={toggle} className="p-1.5 rounded-full bg-white/20 hover:bg-white/30" data-testid="voice-msg-play">
-        {playing ? <Pause size={12} weight="fill" /> : <Play size={12} weight="fill" />}
+        onEnded={() => { setPlaying(false); setProgress(0); setCurrentTime(0); }}
+        onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={handleLoaded} />
+      <button onClick={toggle}
+        className="p-1.5 rounded-full flex-shrink-0 transition-colors"
+        style={{ background: btn, color: iconColor }}
+        data-testid="voice-msg-play">
+        {playing ? <Pause size={14} weight="fill" /> : <Play size={14} weight="fill" />}
       </button>
-      <div className="flex-1 h-1.5 bg-white/20 rounded-full overflow-hidden min-w-[80px]">
-        <div className="h-full bg-white/80 rounded-full transition-all" style={{ width: `${progress}%` }} />
+      <div className="flex-1 flex flex-col gap-0.5 min-w-[60px]">
+        <div className="h-1.5 rounded-full overflow-hidden cursor-pointer"
+          style={{ background: track }}
+          onClick={(e) => {
+            if (!audioRef.current) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            audioRef.current.currentTime = ratio * (audioRef.current.duration || 0);
+          }}>
+          <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: fill }} />
+        </div>
+        <p className="text-[10px] tabular-nums" style={{ color: timeColor }}>
+          {fmt(currentTime)}{duration > 0 ? ` / ${fmt(duration)}` : ''}
+        </p>
       </div>
     </div>
   );
