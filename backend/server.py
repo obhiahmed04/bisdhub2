@@ -1090,13 +1090,21 @@ async def search_users(
         ]
     }, {"_id": 0}).to_list(50)
     
-    # Filter out private profiles
+    # Return all profiles; frontend shows private ones with a lock icon
     results = []
     for u in users:
-        user_obj = User(**_normalize_user_doc(u))
-        if user_obj.is_profile_public or user_obj.user_id == user.user_id:
-            results.append(user_obj.model_dump(exclude={'password_hash'}))
-    
+        normalized = _normalize_user_doc(u)
+        user_obj = User(**normalized)
+        data = user_obj.model_dump(exclude={'password_hash'})
+        # Mark private profiles so frontend can show lock icon and restrict content
+        if not user_obj.is_profile_public and user_obj.user_id != user.user_id:
+            data['profile_locked'] = True
+            data['bio'] = ''
+            data['followers'] = []
+            data['following'] = []
+        else:
+            data['profile_locked'] = False
+        results.append(data)
     return results
 
 # Get user profile by ID number
@@ -1403,7 +1411,7 @@ async def create_post(post_create: PostCreate, user: User = Depends(get_current_
     return post
 
 @api_router.get("/posts/feed/{feed_type}")
-async def get_feed(feed_type: str, user: User = Depends(get_current_user), skip: int = 0, limit: int = 20):
+async def get_feed(feed_type: str, user: User = Depends(get_current_user), skip: int = 0, limit: int = 50):
     if feed_type == "official":
         posts = await db.posts.find({"visibility": "official"}, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     elif feed_type == "following":
@@ -1568,6 +1576,10 @@ async def repost(post_id: str, user: User = Depends(get_current_user)):
     original = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
     if not original:
         raise HTTPException(status_code=404, detail="Post not found")
+    # Prevent duplicate reposts from same user
+    already = await db.posts.find_one({"user_id": user.user_id, "repost_of": post_id}, {"_id": 0, "post_id": 1})
+    if already:
+        raise HTTPException(status_code=400, detail="You already reposted this post")
     
     # Get next serial number
     last_post = await db.posts.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
@@ -1754,8 +1766,10 @@ async def send_dm(receiver_id: str, message: dict, user: User = Depends(get_curr
         f"New message from {user.display_name}"
     )
     
-    # Send via WebSocket if receiver is online
-    await manager.send_personal_message(doc, receiver_id)
+    # Send via WebSocket in real-time to both parties
+    ws_payload = {**doc, "type": "dm"}
+    await manager.send_personal_message(ws_payload, receiver_id)
+    await manager.send_personal_message(ws_payload, user.user_id)
     
     return dm
 
@@ -2111,10 +2125,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     user_id=user_id,
                     content=data['content'],
                     reply_to=data.get('reply_to'),
-                    is_gif=data.get('is_gif', False)
+                    is_gif=data.get('is_gif', False),
+                    voice_url=data.get('voice_url')
                 )
                 doc = chat_msg.model_dump()
                 doc['created_at'] = doc['created_at'].isoformat()
+                # Ensure voice_url is saved even if not in model
+                if data.get('voice_url'):
+                    doc['voice_url'] = data['voice_url']
                 await db.chat_messages.insert_one(doc)
                 
                 ws_user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "display_name": 1, "profile_picture": 1, "id_number": 1, "badges": 1, "role": 1})
@@ -2680,6 +2698,44 @@ async def get_all_tickets(admin: User = Depends(verify_moderator), status: str =
         query["status"] = status
     tickets = await db.tickets.find(query, {"_id": 0}).sort("updated_at", -1).limit(limit).to_list(limit)
     return tickets
+
+
+# Edit a post (owner only) - stores edit history
+@api_router.put("/posts/{post_id}")
+async def edit_post(post_id: str, update: dict, user: User = Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post["user_id"] != user.user_id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this post")
+    
+    new_content = update.get("content", "").strip()
+    if not new_content:
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+    
+    # Store edit history
+    edit_record = {
+        "old_content": post["content"],
+        "new_content": new_content,
+        "edited_at": datetime.now(timezone.utc).isoformat(),
+        "edited_by": user.user_id
+    }
+    
+    await db.posts.update_one(
+        {"post_id": post_id},
+        {
+            "$set": {"content": new_content, "edited": True, "edited_at": datetime.now(timezone.utc).isoformat()},
+            "$push": {"edit_history": edit_record}
+        }
+    )
+    return {"status": "success", "post_id": post_id}
+
+@api_router.get("/posts/{post_id}/edit-history")
+async def get_edit_history(post_id: str, user: User = Depends(get_current_user)):
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0, "edit_history": 1, "user_id": 1})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return post.get("edit_history", [])
 
 # Spam detection - rate limiting per user
 spam_tracker = {}
