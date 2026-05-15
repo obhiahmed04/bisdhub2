@@ -5,7 +5,7 @@ import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { ScrollArea } from './ui/scroll-area';
 import { toast } from 'sonner';
-import { Ticket, Plus, PaperPlaneRight, ArrowLeft, Paperclip, X, RefreshCw } from '@phosphor-icons/react';
+import { Ticket, Plus, PaperPlaneRight, ArrowLeft, Paperclip, X, ArrowClockwise } from '@phosphor-icons/react';
 import api from '../utils/api';
 import axios from 'axios';
 import { API_BASE, resolveAssetUrl } from '../utils/api';
@@ -157,7 +157,7 @@ const TicketChat = ({ ticket, onBack, apiCall, isAnon = false, anonId = '' }) =>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <p className="font-black text-sm truncate" style={{ color: 'var(--text-1)' }}>#{ticket.serial_number} {ticket.subject}</p>
-            <button onClick={loadTicket} title="Refresh" style={{ color: 'var(--text-3)', flexShrink: 0 }}><RefreshCw size={13} /></button>
+            <button onClick={loadTicket} title="Refresh" style={{ color: 'var(--text-3)', flexShrink: 0 }}><ArrowClockwise size={13} /></button>
           </div>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: sc.bg, color: sc.color }}>{sc.label}</span>
