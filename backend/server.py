@@ -360,6 +360,7 @@ class User(BaseModel):
     mute_until: Optional[str] = None
     registration_status: str = "approved"
     push_notifications_enabled: bool = True
+    show_age: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     followers: List[str] = Field(default_factory=list)
     following: List[str] = Field(default_factory=list)
@@ -426,6 +427,9 @@ class ProfileUpdate(BaseModel):
     is_following_public: Optional[bool] = None
     is_friends_public: Optional[bool] = None
     push_notifications_enabled: Optional[bool] = None
+    show_age: Optional[bool] = None
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
 
 class PostCreate(BaseModel):
     content: str
