@@ -61,8 +61,14 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     loadDMConversations();
     loadChatRooms();
     requestNotificationPermission();
-    const cleanup = connectWebSocket();
-    return cleanup;
+    connectWebSocket();
+    return () => {
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (chatPollRef.current) clearInterval(chatPollRef.current);
+      if (dmPollRef.current) clearInterval(dmPollRef.current);
+      if (wsRef.current) { try { wsRef.current.close(); } catch {} }
+    };
   }, []);
 
   // Handle incoming DM navigation from profile page
@@ -86,12 +92,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     }
   }, [activeChatRoom]);
 
-  // Handle incoming DM navigation from profile page
-  useEffect(() => {
-    if (!ws) return;
-    const handleNotifBell = () => {};
-    return handleNotifBell;
-  }, [ws]);
+
 
   useEffect(() => {
     if (activeDM) loadDMMessages();
@@ -117,84 +118,155 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     api.get(`/posts/${viewLikersPost.post_id}/likes`).then(r => setLikers(r.data)).catch(() => setLikers([]));
   }, [viewLikersPost]);
 
+  // ── Stable refs that never change reference ────────────────────────────────
   const activeChatRoomRef = useRef(activeChatRoom);
   useEffect(() => { activeChatRoomRef.current = activeChatRoom; }, [activeChatRoom]);
+  const activeDMRef = useRef(activeDM);
+  useEffect(() => { activeDMRef.current = activeDM; }, [activeDM]);
+  // reconnect backoff state (in ref to avoid re-renders)
+  const retryCountRef = useRef(0);
+  const pingIntervalRef = useRef(null);
+  const chatPollRef = useRef(null);
+  const dmPollRef = useRef(null);
+
+  // Message handler — defined as a ref so socket.onmessage is always current
+  const messageHandlerRef = useRef(null);
+  messageHandlerRef.current = (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.type === 'pong') return;
+    if (data.type === 'ticket_update') {
+      window.dispatchEvent(new CustomEvent('ticket_update', { detail: data }));
+      return;
+    }
+    if (data.type === 'chat_message') {
+      setChatMessages(prev => {
+        if (prev.some(m => m.message_id === data.message_id)) return prev;
+        return [...prev, data];
+      });
+      // Stop chat poll while WS works
+      if (chatPollRef.current) { clearInterval(chatPollRef.current); chatPollRef.current = null; }
+    }
+    if (data.type === 'dm') {
+      setDmMessages(prev => {
+        if (prev.some(m => m.dm_id === data.dm_id)) return prev;
+        return [...prev, data];
+      });
+      loadDMConversations();
+      // Stop dm poll while WS works
+      if (dmPollRef.current) { clearInterval(dmPollRef.current); dmPollRef.current = null; }
+    }
+    if (data.type === 'reaction_update') {
+      setChatMessages(prev => prev.map(m => m.message_id === data.message_id ? { ...m, reactions: data.reactions } : m));
+    }
+    if (data.type === 'call_offer') {
+      setIncomingCall({ caller_id: data.caller_id, caller_name: data.caller_name, caller_picture: data.caller_picture, call_type: data.call_type, sdp: data.sdp });
+    }
+    if (data.type === 'call_unavailable') {
+      toast.error('User is not available for calls right now');
+      setActiveCall(null);
+    }
+    if (data.type === 'call_answer' || data.type === 'ice_candidate' || data.type === 'call_end' || data.type === 'call_reject') {
+      // Forward call signaling events to CallUI via custom event
+      window.dispatchEvent(new CustomEvent('ws_call_event', { detail: data }));
+    }
+  };
 
   const connectWebSocket = () => {
+    // Clear any existing ping
+    if (pingIntervalRef.current) { clearInterval(pingIntervalRef.current); pingIntervalRef.current = null; }
+
     const wsUrl = `${WS_BASE}/${user.user_id}`;
     let socket;
     try { socket = new WebSocket(wsUrl); }
-    catch (e) { console.error('WS create failed', e); return () => {}; }
+    catch (e) {
+      console.error('WS create failed', e);
+      scheduleReconnect();
+      return;
+    }
     wsRef.current = socket;
-    let pingInterval = null;
 
     socket.onopen = () => {
       setWsReady(true);
-      // Join current room
+      retryCountRef.current = 0; // reset backoff on success
+      setWs(socket); // update state so CallUI re-renders with new socket
+
       socket.send(JSON.stringify({ type: 'join_room', room: activeChatRoomRef.current }));
       loadChatMessages();
-      // Keepalive ping every 25 seconds to prevent Render timeout
-      pingInterval = setInterval(() => {
+
+      // Stop polling fallbacks — WS is live
+      if (chatPollRef.current) { clearInterval(chatPollRef.current); chatPollRef.current = null; }
+      if (dmPollRef.current) { clearInterval(dmPollRef.current); dmPollRef.current = null; }
+
+      // Keepalive ping every 20 seconds (Render drops idle WS at ~60s)
+      pingIntervalRef.current = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'ping' }));
         }
-      }, 25000);
+      }, 20000);
     };
 
-    socket.onmessage = (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === 'pong') return; // keepalive response
-      if (data.type === 'ticket_update') {
-        // Notify TicketSystem component via event
-        window.dispatchEvent(new CustomEvent('ticket_update', { detail: data }));
-        return;
-      }
-      if (data.type === 'chat_message') {
-        setChatMessages(prev => {
-          if (prev.some(m => m.message_id === data.message_id)) return prev;
-          return [...prev, data];
-        });
-      }
-      if (data.type === 'dm') {
-        setDmMessages(prev => {
-          if (prev.some(m => m.dm_id === data.dm_id)) return prev;
-          return [...prev, data];
-        });
-        loadDMConversations();
-      }
-      if (data.type === 'reaction_update') {
-        setChatMessages(prev => prev.map(m => m.message_id === data.message_id ? { ...m, reactions: data.reactions } : m));
-      }
-      // Incoming call handling
-      if (data.type === 'call_offer') {
-        setIncomingCall({ caller_id: data.caller_id, caller_name: data.caller_name, caller_picture: data.caller_picture, call_type: data.call_type, sdp: data.sdp });
-      }
-      if (data.type === 'call_unavailable') {
-        toast.error('User is not online');
-        setActiveCall(null);
-      }
-    };
+    // Use ref-based handler so it always has current state closures
+    socket.onmessage = (event) => { messageHandlerRef.current?.(event); };
 
-    socket.onerror = () => setWsReady(false);
+    socket.onerror = () => { setWsReady(false); };
+
     socket.onclose = () => {
       setWsReady(false);
-      // Auto-reconnect after 3 seconds, but only if not already scheduled
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = setTimeout(() => {
-        reconnectTimeoutRef.current = null;
-        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-          connectWebSocket();
-        }
-      }, 3000);
-    };
+      if (pingIntervalRef.current) { clearInterval(pingIntervalRef.current); pingIntervalRef.current = null; }
 
-    setWs(socket);
-    return () => {
-      if (pingInterval) clearInterval(pingInterval);
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      socket.close();
+      // Start polling fallbacks while WS is down
+      startPollingFallbacks();
+      scheduleReconnect();
     };
+  };
+
+  const scheduleReconnect = () => {
+    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+    // Exponential backoff: 2s, 4s, 8s, 16s, max 30s
+    const delay = Math.min(2000 * Math.pow(2, retryCountRef.current), 30000);
+    retryCountRef.current += 1;
+    reconnectTimeoutRef.current = setTimeout(() => {
+      reconnectTimeoutRef.current = null;
+      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+        connectWebSocket();
+      }
+    }, delay);
+  };
+
+  const manualReconnect = () => {
+    retryCountRef.current = 0;
+    if (wsRef.current) { try { wsRef.current.close(); } catch {} }
+    wsRef.current = null;
+    connectWebSocket();
+  };
+
+  const startPollingFallbacks = () => {
+    // Chat polling every 5s when WS is down
+    if (!chatPollRef.current) {
+      chatPollRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          clearInterval(chatPollRef.current); chatPollRef.current = null; return;
+        }
+        api.get(`/chat/${activeChatRoomRef.current}/messages`).then(r => {
+          setChatMessages(r.data || []);
+        }).catch(() => {});
+      }, 5000);
+    }
+    // DM polling every 4s when WS is down
+    if (!dmPollRef.current) {
+      dmPollRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          clearInterval(dmPollRef.current); dmPollRef.current = null; return;
+        }
+        if (activeDMRef.current) {
+          api.get(`/dm/${activeDMRef.current}/messages`).then(r => {
+            setDmMessages(r.data || []);
+          }).catch(() => {});
+        }
+        loadDMConversations();
+      }, 4000);
+    }
   };
 
   const [feedPage, setFeedPage] = useState(0);
@@ -247,7 +319,8 @@ const MainApp = ({ user, onLogout, updateUser }) => {
 
   const loadChatMessages = async () => {
     try {
-      const response = await api.get(`/chat/${activeChatRoom}/messages`);
+      const room = activeChatRoomRef.current || activeChatRoom;
+      const response = await api.get(`/chat/${room}/messages`);
       setChatMessages(response.data);
     } catch (error) {
       if (error.response?.status === 403) {
@@ -299,22 +372,38 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     const images = [...dmAttachImages];
     setNewDMMessage('');
     setDmAttachImages([]);
-    
-    // Try WebSocket first (realtime); fall back to REST
+
+    // Optimistic update — show message instantly in sender UI
+    const tempId = `temp_${Date.now()}`;
+    const optimisticMsg = {
+      dm_id: tempId,
+      sender_id: user.user_id,
+      receiver_id: activeDM,
+      content,
+      images,
+      created_at: new Date().toISOString(),
+      _pending: true
+    };
+    setDmMessages(prev => [...prev, optimisticMsg]);
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'dm',
-        receiver_id: activeDM,
-        content,
-        images
-      }));
+      // WS: server will echo back the real message; remove optimistic when real arrives
+      wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content, images }));
+      // Remove optimistic after server echo arrives (clean up temp after 3s)
+      setTimeout(() => {
+        setDmMessages(prev => prev.filter(m => m.dm_id !== tempId));
+      }, 3000);
     } else {
+      // REST fallback
       try {
-        await api.post(`/dm/${activeDM}/send`, { content, images });
-        loadDMMessages();
+        const res = await api.post(`/dm/${activeDM}/send`, { content, images });
+        // Replace optimistic with real message from server
+        setDmMessages(prev => prev.map(m => m.dm_id === tempId ? { ...res.data, dm_id: res.data.dm_id || tempId } : m));
         loadDMConversations();
       } catch {
-        toast.error('Failed to send message');
+        toast.error('Failed to send message — check your connection');
+        // Remove optimistic and restore input
+        setDmMessages(prev => prev.filter(m => m.dm_id !== tempId));
         setNewDMMessage(content);
       }
     }
@@ -806,9 +895,17 @@ const MainApp = ({ user, onLogout, updateUser }) => {
               <div className="bg-white border-2 border-[#111111] rounded-xl shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] flex-1 flex flex-col p-4 overflow-hidden">
                 <div className="flex items-center justify-between mb-3 pb-2" style={{ borderBottom: '1px solid var(--border)' }}>
                   <h3 className="font-bold text-sm" style={{ color: 'var(--text-1)' }}>{chatRooms.find(r => r.id === activeChatRoom)?.name || 'Chat'}</h3>
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                    {wsReady ? 'Connected' : 'Reconnecting...'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {wsReady ? '● Live' : '● Connecting...'}
+                    </span>
+                    {!wsReady && (
+                      <button onClick={manualReconnect} className="text-xs font-bold px-2 py-0.5 rounded-lg"
+                        style={{ background: 'var(--blue)', color: '#fff' }}>
+                        Retry
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <ScrollArea className="flex-1 mb-3">
                   <div className="space-y-3">
@@ -965,12 +1062,16 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       {getPublicName(activeDMUser)}
                     </span>
                     <div className="flex gap-1.5">
-                      <button data-testid="dm-audio-call" onClick={() => startCall('audio')}
-                        className="p-2 rounded-lg border-2 border-[#111111] bg-[#A7F3D0] text-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]" title="Voice Call">
+                      <button data-testid="dm-audio-call"
+                        onClick={() => { if (!wsReady) { toast.error('Chat must be connected to make calls'); return; } startCall('audio'); }}
+                        className={`p-2 rounded-lg border-2 border-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] ${wsReady ? 'bg-[#A7F3D0] text-[#111111] hover:translate-y-[1px] hover:translate-x-[1px]' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                        title={wsReady ? "Voice Call" : "Connecting... please wait"}>
                         <Phone size={16} weight="bold" />
                       </button>
-                      <button data-testid="dm-video-call" onClick={() => startCall('video')}
-                        className="p-2 rounded-lg border-2 border-[#111111] bg-[#2563EB] text-white shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]" title="Video Call">
+                      <button data-testid="dm-video-call"
+                        onClick={() => { if (!wsReady) { toast.error('Chat must be connected to make calls'); return; } startCall('video'); }}
+                        className={`p-2 rounded-lg border-2 border-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] ${wsReady ? 'bg-[#2563EB] text-white hover:translate-y-[1px] hover:translate-x-[1px]' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                        title={wsReady ? "Video Call" : "Connecting... please wait"}>
                         <VideoCamera size={16} weight="bold" />
                       </button>
                     </div>
@@ -983,8 +1084,9 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <div className={`max-w-[75%] ${
                             msg.sender_id === user.user_id
                               ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
-                              : 'bg-[#F5F5F5] rounded-2xl rounded-bl-sm px-3 py-2'
-                          }`}>
+                              : 'rounded-2xl rounded-bl-sm px-3 py-2'
+                          } ${msg._pending ? 'opacity-60' : ''}`}
+                          style={msg.sender_id !== user.user_id ? { background: 'var(--bg-surface)' } : {}}>
                             <p className="text-sm">{msg.content}</p>
                             {msg.images?.length > 0 && (
                               <div className="mt-1.5">
@@ -1048,7 +1150,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
       {/* Active Call Overlay */}
       {activeCall && (
         <CallUI
-          ws={wsRef.current}
+          wsRef={wsRef}
           user={user}
           targetUser={activeCall.targetUser}
           callType={activeCall.callType}
@@ -1060,7 +1162,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
       {/* Incoming Call Overlay */}
       {incomingCall && !activeCall && (
         <CallUI
-          ws={wsRef.current}
+          wsRef={wsRef}
           user={user}
           targetUser={{ user_id: incomingCall.caller_id, display_name: incomingCall.caller_name, profile_picture: incomingCall.caller_picture }}
           callType={incomingCall.call_type}
