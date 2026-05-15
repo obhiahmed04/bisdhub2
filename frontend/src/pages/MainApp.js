@@ -86,6 +86,13 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     }
   }, [activeChatRoom]);
 
+  // Handle incoming DM navigation from profile page
+  useEffect(() => {
+    if (!ws) return;
+    const handleNotifBell = () => {};
+    return handleNotifBell;
+  }, [ws]);
+
   useEffect(() => {
     if (activeDM) loadDMMessages();
   }, [activeDM]);
@@ -110,19 +117,39 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     api.get(`/posts/${viewLikersPost.post_id}/likes`).then(r => setLikers(r.data)).catch(() => setLikers([]));
   }, [viewLikersPost]);
 
+  const activeChatRoomRef = useRef(activeChatRoom);
+  useEffect(() => { activeChatRoomRef.current = activeChatRoom; }, [activeChatRoom]);
+
   const connectWebSocket = () => {
     const wsUrl = `${WS_BASE}/${user.user_id}`;
-    const socket = new WebSocket(wsUrl);
+    let socket;
+    try { socket = new WebSocket(wsUrl); }
+    catch (e) { console.error('WS create failed', e); return () => {}; }
     wsRef.current = socket;
+    let pingInterval = null;
 
     socket.onopen = () => {
       setWsReady(true);
-      socket.send(JSON.stringify({ type: 'join_room', room: activeChatRoom }));
+      // Join current room
+      socket.send(JSON.stringify({ type: 'join_room', room: activeChatRoomRef.current }));
       loadChatMessages();
+      // Keepalive ping every 25 seconds to prevent Render timeout
+      pingInterval = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 25000);
     };
 
     socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+      if (data.type === 'pong') return; // keepalive response
+      if (data.type === 'ticket_update') {
+        // Notify TicketSystem component via event
+        window.dispatchEvent(new CustomEvent('ticket_update', { detail: data }));
+        return;
+      }
       if (data.type === 'chat_message') {
         setChatMessages(prev => {
           if (prev.some(m => m.message_id === data.message_id)) return prev;
@@ -164,6 +191,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
 
     setWs(socket);
     return () => {
+      if (pingInterval) clearInterval(pingInterval);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       socket.close();
     };

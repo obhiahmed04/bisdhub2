@@ -57,9 +57,31 @@ const PendingRegistrationPage = () => {
     } finally { setChecking(false); }
   };
 
+  const [emailOtpStep, setEmailOtpStep] = useState(false); // step: 'otp' or false
+  const [emailOtp, setEmailOtp] = useState('');
+
   const saveEdit = async () => {
+    // If email changed, require OTP first
+    if (editData.email && editData.email !== reg?.email && !emailOtpStep) {
+      try {
+        const r = await axios.post(`${API_BASE}/auth/registration/${status.reg_id}/request-email-otp`, { new_email: editData.email });
+        toast.success(r.data.message);
+        if (r.data.dev_otp) toast.info(`Dev OTP: ${r.data.dev_otp}`);
+        setEmailOtpStep(true);
+      } catch (e) { toast.error(e.response?.data?.detail || 'Failed to send OTP'); }
+      return;
+    }
+    if (emailOtpStep) {
+      try {
+        await axios.post(`${API_BASE}/auth/registration/${status.reg_id}/verify-email-otp`, { otp: emailOtp });
+        toast.success('Email verified!');
+        setEmailOtpStep(false); setEmailOtp('');
+      } catch (e) { toast.error(e.response?.data?.detail || 'Invalid OTP'); return; }
+    }
     try {
-      const res = await axios.put(`${API_BASE}/auth/registration/${status.reg_id}`, editData);
+      const payload = { ...editData };
+      if (payload.email === reg?.email) delete payload.email; // not changed
+      const res = await axios.put(`${API_BASE}/auth/registration/${status.reg_id}`, payload);
       setStatus(prev => ({ ...prev, registration: res.data.registration }));
       setEditMode(false);
       toast.success('Registration updated!');
@@ -160,11 +182,23 @@ const PendingRegistrationPage = () => {
                   </div>
                 )
               ))}
+              {emailOtpStep && (
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'var(--text-2)' }}>
+                    OTP sent to new email *
+                  </label>
+                  <Input value={emailOtp} onChange={e => setEmailOtp(e.target.value)}
+                    placeholder="Enter 6-digit OTP" className="rounded-xl border text-sm font-mono"
+                    style={{ background: 'var(--bg-input)', borderColor: 'var(--border-c)', color: 'var(--text-1)' }} />
+                </div>
+              )}
               <div className="flex gap-2">
-                <Button onClick={() => setEditMode(false)} className="flex-1 rounded-xl border font-bold"
+                <Button onClick={() => { setEditMode(false); setEmailOtpStep(false); setEmailOtp(''); }} className="flex-1 rounded-xl border font-bold"
                   style={{ background: 'var(--bg-card)', color: 'var(--text-1)', borderColor: 'var(--border-c)' }}>Cancel</Button>
                 <Button onClick={saveEdit} className="flex-1 rounded-xl border font-bold"
-                  style={{ background: 'var(--blue)', color: '#fff', borderColor: 'var(--blue)' }}>Save Changes</Button>
+                  style={{ background: 'var(--blue)', color: '#fff', borderColor: 'var(--blue)' }}>
+                  {emailOtpStep ? 'Verify & Save' : 'Save Changes'}
+                </Button>
               </div>
             </div>
           )}

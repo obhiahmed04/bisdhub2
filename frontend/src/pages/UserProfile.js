@@ -303,6 +303,13 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
                 <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
                   Grade {profileUser.current_class} • {profileUser.section}
                   {profileUser.is_ex_student && ' • EX Student'}
+                  {' • Joined '}
+                  {profileUser.created_at ? (() => {
+                    try {
+                      const d = new Date(profileUser.created_at);
+                      return d.toLocaleDateString([], { month: 'short', year: 'numeric' });
+                    } catch { return ''; }
+                  })() : ''}
                   {(profileUser.show_age !== false) && profileUser.date_of_birth && (() => {
                     try {
                       const [d, m, y] = profileUser.date_of_birth.split('/');

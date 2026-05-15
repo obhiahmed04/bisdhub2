@@ -522,6 +522,9 @@ const AdminTicketPanel = ({ api }) => {
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
               From: {selected.created_by_name} ({selected.created_by_id_number}) · {selected.category}
             </p>
+            <p className="text-[10px] font-mono mt-0.5 select-all" style={{ color: 'var(--text-3)' }}>
+              Ticket ID: {selected.ticket_id}
+            </p>
           </div>
           <span className="text-xs px-2 py-1 rounded-full font-bold"
             style={{ background: `${(STATUS[selected.status] || STATUS.open).color}20`, color: (STATUS[selected.status] || STATUS.open).color }}>
