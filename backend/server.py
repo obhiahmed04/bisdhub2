@@ -528,6 +528,7 @@ class TicketCreate(BaseModel):
 
 class TicketReply(BaseModel):
     message: str
+    attachments: List[str] = []  # List of uploaded file URLs
 
 class Ticket(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -2106,7 +2107,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         while True:
             data = await websocket.receive_json()
             
-            if data['type'] == 'join_room':
+            if data['type'] == 'ping':
+                await manager.send_personal_message({"type": "pong"}, user_id)
+            
+            elif data['type'] == 'join_room':
                 manager.join_room(user_id, data['room'])
             
             elif data['type'] == 'chat_message':
@@ -2614,6 +2618,16 @@ async def get_my_tickets(user: User = Depends(get_current_user)):
     tickets = await db.tickets.find({"created_by": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return tickets
 
+
+@api_router.get("/tickets/by-id-number/{id_number}")
+async def get_tickets_by_id_number(id_number: str):
+    """Get all tickets for a given id_number (for pending registration users)"""
+    tickets = await db.tickets.find(
+        {"created_by_id_number": id_number},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return tickets
+
 @api_router.get("/tickets/{ticket_id}")
 async def get_ticket(ticket_id: str, user: User = Depends(get_current_user)):
     ticket = await db.tickets.find_one({"ticket_id": ticket_id}, {"_id": 0})
@@ -2644,13 +2658,26 @@ async def reply_to_ticket(ticket_id: str, reply: TicketReply, user: User = Depen
         "sender_name": user.display_name,
         "sender_type": "admin" if (user.is_admin or user.is_moderator) else "user",
         "message": reply.message,
+        "attachments": reply.attachments if hasattr(reply, 'attachments') else [],
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     now = datetime.now(timezone.utc).isoformat()
+    new_status = "in_progress" if ticket['status'] == 'open' else ticket['status']
     await db.tickets.update_one(
         {"ticket_id": ticket_id},
-        {"$push": {"messages": message}, "$set": {"updated_at": now, "status": "in_progress" if ticket['status'] == 'open' else ticket['status']}}
+        {"$push": {"messages": message}, "$set": {"updated_at": now, "status": new_status}}
     )
+    # Send realtime WS notification to ticket owner
+    ws_notif = {"type": "ticket_update", "ticket_id": ticket_id, "message": message}
+    if ticket.get("created_by") and ticket["created_by"] != "anonymous":
+        await manager.send_personal_message(ws_notif, ticket["created_by"])
+    # Also notify all admins if this is a user reply
+    sender_type = "admin" if (user.is_admin or user.is_moderator) else "user"
+    if sender_type == "user":
+        for uid in list(manager.active_connections.keys()):
+            db_u = await db.users.find_one({"user_id": uid}, {"_id": 0, "is_admin": 1, "is_moderator": 1})
+            if db_u and (db_u.get("is_admin") or db_u.get("is_moderator")):
+                await manager.send_personal_message(ws_notif, uid)
     return {"status": "success"}
 
 @api_router.post("/tickets/anonymous/{ticket_id}/reply")
@@ -2736,6 +2763,125 @@ async def get_edit_history(post_id: str, user: User = Depends(get_current_user))
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     return post.get("edit_history", [])
+
+
+# ── Email Change with OTP verification ──────────────────────────────────────
+@api_router.post("/auth/request-email-change")
+async def request_email_change(request: dict, user: User = Depends(get_current_user)):
+    new_email = request.get("new_email", "").strip().lower()
+    if not new_email or "@" not in new_email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    # Check if email already in use
+    existing = await db.users.find_one({"email": new_email}, {"_id": 0, "user_id": 1})
+    if existing and existing["user_id"] != user.user_id:
+        raise HTTPException(status_code=400, detail="Email already in use by another account")
+    otp = str(random.randint(100000, 999999))
+    otp_storage[f"email_change_{user.user_id}"] = {
+        "otp": otp,
+        "new_email": new_email,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
+    }
+    email_sent = await send_otp_email(new_email, otp)
+    masked = new_email[:3] + "***" + new_email[new_email.index("@"):]
+    if email_sent:
+        return {"status": "success", "message": f"OTP sent to {masked}"}
+    else:
+        logger.info(f"Email change OTP for {user.user_id}: {otp}")
+        return {"status": "success", "message": f"OTP sent to {masked}", "dev_otp": otp}
+
+@api_router.post("/auth/verify-email-change")
+async def verify_email_change(request: dict, user: User = Depends(get_current_user)):
+    otp = request.get("otp", "")
+    stored = otp_storage.get(f"email_change_{user.user_id}")
+    if not stored:
+        raise HTTPException(status_code=400, detail="No pending email change. Request a new OTP.")
+    if stored["expires_at"] < datetime.now(timezone.utc):
+        del otp_storage[f"email_change_{user.user_id}"]
+        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
+    if stored["otp"] != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    new_email = stored["new_email"]
+    del otp_storage[f"email_change_{user.user_id}"]
+    await db.users.update_one({"user_id": user.user_id}, {"$set": {"email": new_email}})
+    return {"status": "success", "message": "Email updated successfully", "new_email": new_email}
+
+# ── Email-based Password Change (dev: returns link, prod: sends email) ──────
+@api_router.post("/auth/request-password-change-link")
+async def request_password_change_link(user: User = Depends(get_current_user)):
+    db_user = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "email": 1})
+    email = db_user.get("email") if db_user else None
+    if not email:
+        raise HTTPException(status_code=400, detail="No email on account. Use password form instead.")
+    otp = str(random.randint(100000, 999999))
+    otp_storage[f"pwchange_{user.user_id}"] = {
+        "otp": otp,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=30)
+    }
+    # Dev: Return OTP in response + log it. Prod: send via email
+    email_sent = await send_otp_email(email, otp)
+    masked = email[:3] + "***" + email[email.index("@"):]
+    dev_link = f"/settings?pw_otp={otp}&uid={user.user_id}"
+    if email_sent:
+        return {"status": "success", "message": f"Password change code sent to {masked}", "dev_link": dev_link}
+    else:
+        logger.info(f"Password change OTP for {user.user_id}: {otp}")
+        return {"status": "success", "message": f"[DEV] Password change OTP: {otp}", "dev_otp": otp, "dev_link": dev_link}
+
+@api_router.post("/auth/verify-password-change-link")
+async def verify_password_change_link(request: dict, user: User = Depends(get_current_user)):
+    otp = request.get("otp", "")
+    new_password = request.get("new_password", "")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    stored = otp_storage.get(f"pwchange_{user.user_id}")
+    if not stored:
+        raise HTTPException(status_code=400, detail="No pending request. Request a new code.")
+    if stored["expires_at"] < datetime.now(timezone.utc):
+        del otp_storage[f"pwchange_{user.user_id}"]
+        raise HTTPException(status_code=400, detail="Code expired")
+    if stored["otp"] != otp:
+        raise HTTPException(status_code=400, detail="Invalid code")
+    del otp_storage[f"pwchange_{user.user_id}"]
+    new_hash = await asyncio.to_thread(
+        lambda: bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    )
+    await db.users.update_one({"user_id": user.user_id}, {"$set": {"password_hash": new_hash}})
+    return {"status": "success", "message": "Password changed successfully"}
+
+# ── Registration email change with OTP ──────────────────────────────────────
+@api_router.post("/auth/registration/{reg_id}/request-email-otp")
+async def request_registration_email_otp(reg_id: str, request: dict):
+    new_email = request.get("new_email", "").strip().lower()
+    if not new_email or "@" not in new_email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    otp = str(random.randint(100000, 999999))
+    otp_storage[f"reg_email_{reg_id}"] = {
+        "otp": otp,
+        "new_email": new_email,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
+    }
+    email_sent = await send_otp_email(new_email, otp)
+    masked = new_email[:3] + "***" + new_email[new_email.index("@"):]
+    if email_sent:
+        return {"status": "success", "message": f"OTP sent to {masked}"}
+    else:
+        return {"status": "success", "message": f"OTP sent to {masked}", "dev_otp": otp}
+
+@api_router.post("/auth/registration/{reg_id}/verify-email-otp")
+async def verify_registration_email_otp(reg_id: str, request: dict):
+    otp = request.get("otp", "")
+    stored = otp_storage.get(f"reg_email_{reg_id}")
+    if not stored:
+        raise HTTPException(status_code=400, detail="No pending OTP. Request a new one.")
+    if stored["expires_at"] < datetime.now(timezone.utc):
+        del otp_storage[f"reg_email_{reg_id}"]
+        raise HTTPException(status_code=400, detail="OTP expired")
+    if stored["otp"] != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    new_email = stored["new_email"]
+    del otp_storage[f"reg_email_{reg_id}"]
+    await db.registrations.update_one({"reg_id": reg_id}, {"$set": {"email": new_email}})
+    return {"status": "success", "new_email": new_email}
 
 # Spam detection - rate limiting per user
 spam_tracker = {}
