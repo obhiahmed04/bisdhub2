@@ -38,7 +38,11 @@ const MsgBubble = ({ msg, isAdmin }) => (
     <div className="max-w-[85%] space-y-1">
       <div className="px-3 py-2 rounded-xl text-sm"
         style={{ background: isAdmin ? 'var(--bg-surface)' : 'var(--blue)', color: isAdmin ? 'var(--text-1)' : '#fff' }}>
-        <p className="text-[10px] font-bold opacity-60 mb-0.5">{isAdmin ? '👮 Support' : '👤 You'}</p>
+        <p className="text-[10px] font-bold opacity-60 mb-0.5">
+          {isAdmin
+            ? `👮 ${msg.sender_name || 'Support'}${msg.sender_id ? ` (${String(msg.sender_id).slice(0,6)}…)` : ''}`
+            : '👤 You'}
+        </p>
         <p className="whitespace-pre-wrap">{msg.message}</p>
         {msg.attachments?.map((url, i) => (
           <a key={i} href={resolveAssetUrl(url)} target="_blank" rel="noreferrer"
