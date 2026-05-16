@@ -1405,28 +1405,38 @@ async def create_post(post_create: PostCreate, user: User = Depends(get_current_
 @api_router.get("/posts/feed/{feed_type}")
 async def get_feed(feed_type: str, user: User = Depends(get_current_user), skip: int = 0, limit: int = 50):
     if feed_type == "official":
-        posts = await db.posts.find({"visibility": "official"}, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+        posts = await db.posts.find({"visibility": "official", "repost_of": None}, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     elif feed_type == "following":
         posts = await db.posts.find({
             "user_id": {"$in": user.following},
-            "visibility": {"$in": ["public"]}
+            "visibility": {"$in": ["public"]},
+            "repost_of": None
         }, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     elif feed_type == "friends":
         posts = await db.posts.find({
             "user_id": {"$in": user.friends},
-            "visibility": {"$in": ["public", "friends_only"]}
+            "visibility": {"$in": ["public", "friends_only"]},
+            "repost_of": None
         }, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     else:  # public feed
         posts = await db.posts.find({
-            "visibility": "public"
+            "visibility": "public",
+            "repost_of": None  # reposts only show on user profile Reposts tab
         }, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     
+    # Collect all post_ids to check which ones the user has reposted
+    post_ids = [p['post_id'] for p in posts]
+    user_reposts = await db.posts.find({"user_id": user.user_id, "repost_of": {"$in": post_ids}}, {"_id": 0, "repost_of": 1}).to_list(200)
+    reposted_ids = {r['repost_of'] for r in user_reposts}
+
     # Enrich with user data
     for post in posts:
         if isinstance(post.get('created_at'), str):
             post['created_at'] = datetime.fromisoformat(post['created_at'])
         post_user = await db.users.find_one({"user_id": post['user_id']}, {"_id": 0, "user_id": 1, "display_name": 1, "username": 1, "id_number": 1, "profile_picture": 1, "badges": 1, "role": 1})
         post['user'] = post_user
+        # Tell frontend if current user reposted this
+        post['is_reposted_by_me'] = post['post_id'] in reposted_ids
         # Enrich repost with original poster info
         if post.get('repost_of') and post.get('repost_user_id') and not post.get('repost_original_username'):
             orig_poster = await db.users.find_one({"user_id": post['repost_user_id']}, {"_id": 0, "username": 1, "display_name": 1})
@@ -2745,6 +2755,81 @@ async def get_edit_history(post_id: str, user: User = Depends(get_current_user))
     if not post:
         raise HTTPException(status_code=404, detail="Not found")
     return post.get("edit_history", [])
+
+
+@api_router.delete("/posts/{post_id}/repost")
+async def unrepost(post_id: str, user: User = Depends(get_current_user)):
+    """Remove user's repost of a given post"""
+    repost_doc = await db.posts.find_one({"user_id": user.user_id, "repost_of": post_id}, {"_id": 0, "post_id": 1})
+    if not repost_doc:
+        raise HTTPException(status_code=404, detail="You haven't reposted this post")
+    await db.posts.delete_one({"post_id": repost_doc["post_id"]})
+    await db.posts.update_one({"post_id": post_id}, {"$inc": {"share_count": -1}})
+    return {"status": "success", "message": "Repost removed"}
+
+
+# ── Global Chat Archive ──────────────────────────────────────────────────────
+async def archive_global_chat():
+    """Archive all chat messages from a room into chat_archives collection"""
+    now = datetime.now(timezone.utc)
+    for room_id in ['general']:  # archive main rooms
+        messages = await db.chat_messages.find({"chat_room": room_id}, {"_id": 0}).to_list(None)
+        if messages:
+            await db.chat_archives.insert_one({
+                "archive_id": str(uuid.uuid4()),
+                "chat_room": room_id,
+                "archived_at": now.isoformat(),
+                "message_count": len(messages),
+                "messages": messages
+            })
+    await db.chat_messages.delete_many({})
+    logger.info(f"Global chat archived at {now.isoformat()}")
+
+async def scheduled_chat_archive():
+    """Archive global chat every 12h at 1:00 AM and 1:00 PM UTC+3 (22:00 and 10:00 UTC)"""
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            utc3 = now + timedelta(hours=3)
+            # Next archive times in UTC+3
+            candidates = [
+                utc3.replace(hour=1,  minute=0, second=0, microsecond=0),
+                utc3.replace(hour=13, minute=0, second=0, microsecond=0),
+                (utc3 + timedelta(days=1)).replace(hour=1, minute=0, second=0, microsecond=0),
+            ]
+            next_local = min((t for t in candidates if t > utc3), default=candidates[-1])
+            next_utc = next_local - timedelta(hours=3)
+            wait = max(0, (next_utc - now).total_seconds())
+            logger.info(f"Next chat archive in {wait/3600:.1f}h at {next_utc.isoformat()}")
+            await asyncio.sleep(wait)
+            await archive_global_chat()
+        except Exception as e:
+            logger.error(f"Chat archive error: {e}")
+            await asyncio.sleep(3600)  # retry in 1h on error
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(scheduled_chat_archive())
+
+@api_router.get("/chat/archives")
+async def get_chat_archives(user: User = Depends(verify_moderator), skip: int = 0, limit: int = 20):
+    """Get list of archived chat sessions (mods only)"""
+    archives = await db.chat_archives.find({}, {"_id": 0, "messages": 0}).sort("archived_at", -1).skip(skip).limit(limit).to_list(limit)
+    return archives
+
+@api_router.get("/chat/archives/{archive_id}")
+async def get_archive_detail(archive_id: str, user: User = Depends(verify_moderator)):
+    """Get full archived chat session (mods only)"""
+    archive = await db.chat_archives.find_one({"archive_id": archive_id}, {"_id": 0})
+    if not archive:
+        raise HTTPException(status_code=404, detail="Archive not found")
+    return archive
+
+@api_router.post("/chat/archive-now")
+async def trigger_archive_now(user: User = Depends(verify_moderator)):
+    """Manually trigger chat archive (mods only)"""
+    await archive_global_chat()
+    return {"status": "success", "message": "Chat archived"}
 
 # Spam detection - rate limiting per user
 spam_tracker = {}
