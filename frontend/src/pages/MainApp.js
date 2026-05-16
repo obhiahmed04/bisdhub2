@@ -340,22 +340,31 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     }
   };
 
-  const sendChatMessage = () => {
-    if (!newChatMessage.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      if (!wsReady) toast.error('Chat connection not ready');
-      return;
-    }
-    const payload = {
-      type: 'chat_message',
-      chat_room: activeChatRoom,
-      content: newChatMessage
-    };
-    if (replyingTo) {
-      payload.reply_to = replyingTo.message_id;
-    }
-    wsRef.current.send(JSON.stringify(payload));
+  const sendChatMessage = async () => {
+    const content = newChatMessage.trim();
+    if (!content) return;
     setNewChatMessage('');
+    const replyTo = replyingTo?.message_id || null;
     setReplyingTo(null);
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      // Send via WebSocket (real-time)
+      const payload = { type: 'chat_message', chat_room: activeChatRoom, content };
+      if (replyTo) payload.reply_to = replyTo;
+      wsRef.current.send(JSON.stringify(payload));
+    } else {
+      // REST fallback — works when WebSocket is reconnecting
+      try {
+        const res = await api.post('/chat/' + activeChatRoom + '/send', { content, reply_to: replyTo });
+        setChatMessages(prev => {
+          if (prev.some(m => m.message_id === res.data.message_id)) return prev;
+          return [...prev, res.data];
+        });
+      } catch {
+        toast.error('Failed to send message');
+        setNewChatMessage(content);
+      }
+    }
   };
 
   const loadDMConversations = async () => {
