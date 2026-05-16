@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Phone, PhoneDisconnect, VideoCamera, Microphone, MicrophoneSlash, VideoCameraSlash } from '@phosphor-icons/react';
 
-const ICE_CONFIG = {
+const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -11,62 +11,62 @@ const ICE_CONFIG = {
   ],
 };
 
-const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming, incomingOffer, onEnd }) => {
+// Get current live WebSocket from the ref passed by MainApp
+const getWs = (wsRef) => wsRef?.current;
+
+const wsSend = (wsRef, payload) => {
+  const ws = getWs(wsRef);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+    return true;
+  }
+  console.warn('[BISD Call] wsSend failed — WS not open. readyState:', ws?.readyState);
+  return false;
+};
+
+const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, incomingOffer, onEnd }) => {
   const [status, setStatus] = useState(isIncoming ? 'ringing' : 'calling');
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState('');
 
+  const callType = useRef(callTypeProp || 'audio');
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const timerRef = useRef(null);
-  const callType = useRef(initialCallType || 'audio');
   const endedRef = useRef(false);
-  // Buffer ICE candidates that arrive before remote description is set
-  const iceCandidateBufferRef = useRef([]);
-  const remoteDescSetRef = useRef(false);
-
-  const getWs = () => wsRef?.current;
-
-  const wsSend = (payload) => {
-    const ws = getWs();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-      return true;
-    }
-    return false;
-  };
+  // ICE candidates that arrive before setRemoteDescription — buffer them
+  const iceBufRef = useRef([]);
+  const remoteSetRef = useRef(false);
 
   const cleanup = useCallback(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(t => t.stop());
-      localStreamRef.current = null;
-    }
-    if (pcRef.current) {
-      try { pcRef.current.close(); } catch {}
-      pcRef.current = null;
-    }
+    clearInterval(timerRef.current);
+    clearInterval(window._bisdPing); // don't kill the main WS ping
+    localStreamRef.current?.getTracks().forEach(t => t.stop());
+    localStreamRef.current = null;
+    try { pcRef.current?.close(); } catch {}
+    pcRef.current = null;
   }, []);
 
   const endCall = useCallback(() => {
     if (endedRef.current) return;
     endedRef.current = true;
-    wsSend({ type: 'call_end', target_id: targetUser.user_id });
+    wsSend(wsRef, { type: 'call_end', target_id: targetUser.user_id });
     cleanup();
     onEnd();
-  }, [targetUser, cleanup, onEnd]);
+  }, [wsRef, targetUser, cleanup, onEnd]);
 
-  // Drain buffered ICE candidates after remote description is set
-  const drainIceCandidateBuffer = useCallback(async () => {
-    if (!pcRef.current) return;
-    for (const candidate of iceCandidateBufferRef.current) {
-      try { await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+  // Add buffered ICE candidates after remote description is set
+  const flushIceBuf = useCallback(async () => {
+    const pc = pcRef.current;
+    if (!pc) return;
+    for (const c of iceBufRef.current) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
     }
-    iceCandidateBufferRef.current = [];
+    iceBufRef.current = [];
   }, []);
 
   const setupPeerConnection = useCallback(async () => {
@@ -75,14 +75,14 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
-        video: isVideo ? { width: 640, height: 480, facingMode: 'user' } : false,
+        video: isVideo ? { width: 640, height: 480 } : false,
       });
     } catch (err) {
       const msg = err.name === 'NotAllowedError'
-        ? 'Microphone/camera permission denied. Please allow access in your browser settings.'
+        ? 'Microphone/camera permission denied. Please allow access in browser settings and try again.'
         : err.name === 'NotFoundError'
-        ? 'No microphone or camera found on this device.'
-        : `Media error: ${err.message}`;
+        ? 'No microphone/camera found on this device.'
+        : `Could not access media: ${err.message}`;
       setError(msg);
       throw err;
     }
@@ -90,67 +90,61 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
     localStreamRef.current = stream;
     if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-    const pc = new RTCPeerConnection(ICE_CONFIG);
+    const pc = new RTCPeerConnection(ICE_SERVERS);
     pcRef.current = pc;
-    remoteDescSetRef.current = false;
-    iceCandidateBufferRef.current = [];
+    remoteSetRef.current = false;
+    iceBufRef.current = [];
 
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        wsSend({ type: 'ice_candidate', target_id: targetUser.user_id, candidate: e.candidate });
-      }
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) wsSend(wsRef, { type: 'ice_candidate', target_id: targetUser.user_id, candidate });
     };
 
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current && e.streams[0]) {
-        remoteVideoRef.current.srcObject = e.streams[0];
-      }
+      if (remoteVideoRef.current && e.streams[0]) remoteVideoRef.current.srcObject = e.streams[0];
     };
 
     pc.onconnectionstatechange = () => {
+      console.log('[BISD Call] connectionState:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         setStatus('connected');
         timerRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
       }
       if (pc.connectionState === 'failed') {
-        setError('Connection failed. Check your internet connection.');
-        setTimeout(endCall, 2500);
+        setError('Connection failed. Both users must be on a network that allows WebRTC.');
+        setTimeout(endCall, 3000);
       }
-      if (pc.connectionState === 'disconnected') {
-        setStatus('reconnecting...');
-      }
+      if (pc.connectionState === 'disconnected') setStatus('reconnecting...');
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'failed') {
-        pc.restartIce();
-      }
+      console.log('[BISD Call] iceConnectionState:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed') pc.restartIce();
     };
 
     return pc;
-  }, [targetUser, endCall]);
+  }, [wsRef, targetUser, endCall]);
 
-  // Outgoing call — wait for WS, then send offer
+  // ── Outgoing call ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (isIncoming) return;
     let cancelled = false;
+
     (async () => {
-      // Wait up to 8s for WS
-      for (let i = 0; i < 40; i++) {
-        const ws = getWs();
-        if (ws && ws.readyState === WebSocket.OPEN) break;
+      // Wait up to 6 seconds for WebSocket to be ready
+      for (let i = 0; i < 30; i++) {
+        if (getWs(wsRef)?.readyState === WebSocket.OPEN) break;
         await new Promise(r => setTimeout(r, 200));
         if (cancelled) return;
       }
-      const ws = getWs();
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setError('Cannot make calls while chat is reconnecting. Please wait for connection.');
-        setTimeout(onEnd, 3500);
+
+      if (getWs(wsRef)?.readyState !== WebSocket.OPEN) {
+        setError('Chat is not yet connected. Please wait a moment and try again.');
+        setTimeout(onEnd, 4000);
         return;
       }
-      if (cancelled) return;
+
       try {
         const pc = await setupPeerConnection();
         if (cancelled) return;
@@ -159,7 +153,7 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
           offerToReceiveVideo: callType.current === 'video',
         });
         await pc.setLocalDescription(offer);
-        wsSend({
+        wsSend(wsRef, {
           type: 'call_offer',
           target_id: targetUser.user_id,
           call_type: callType.current,
@@ -167,36 +161,42 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
           caller_picture: user.profile_picture,
           sdp: offer,
         });
+        console.log('[BISD Call] Offer sent to', targetUser.user_id);
       } catch (err) {
         if (!cancelled && !error) {
-          setError('Could not start call. Check microphone/camera permissions.');
+          setError('Failed to start call. Check microphone permissions.');
           setTimeout(endCall, 3000);
         }
       }
     })();
+
     return () => { cancelled = true; };
   }, []); // eslint-disable-line
 
-  // Listen for WS call events dispatched by MainApp
+  // ── Listen for call signaling from MainApp (via CustomEvent) ──────────────
   useEffect(() => {
     const handler = async (e) => {
       const data = e.detail;
-      if (!data) return;
+      if (!data || !pcRef.current) return;
 
-      if (data.type === 'call_answer' && pcRef.current) {
+      if (data.type === 'call_answer') {
         try {
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          remoteDescSetRef.current = true;
-          await drainIceCandidateBuffer();
-        } catch {}
+          remoteSetRef.current = true;
+          await flushIceBuf(); // drain any candidates that arrived early
+          console.log('[BISD Call] Remote description set (answer)');
+        } catch (err) {
+          console.error('[BISD Call] setRemoteDescription failed:', err);
+        }
       }
 
       if (data.type === 'ice_candidate' && data.candidate) {
-        if (pcRef.current && remoteDescSetRef.current) {
-          try { await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+        if (remoteSetRef.current) {
+          try { await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+          catch {}
         } else {
-          // Buffer until remote description is ready
-          iceCandidateBufferRef.current.push(data.candidate);
+          // Buffer — will be added after answer is set
+          iceBufRef.current.push(data.candidate);
         }
       }
 
@@ -205,23 +205,25 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
         onEnd();
       }
     };
+
     window.addEventListener('ws_call_event', handler);
     return () => window.removeEventListener('ws_call_event', handler);
-  }, [cleanup, onEnd, drainIceCandidateBuffer]);
+  }, [cleanup, onEnd, flushIceBuf]);
 
-  // Accept incoming call
+  // ── Accept incoming call ───────────────────────────────────────────────────
   const acceptCall = async () => {
     setStatus('connecting');
     try {
       const pc = await setupPeerConnection();
       await pc.setRemoteDescription(new RTCSessionDescription(incomingOffer));
-      remoteDescSetRef.current = true;
-      await drainIceCandidateBuffer();
+      remoteSetRef.current = true;
+      await flushIceBuf();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      wsSend({ type: 'call_answer', target_id: targetUser.user_id, sdp: answer });
+      wsSend(wsRef, { type: 'call_answer', target_id: targetUser.user_id, sdp: answer });
+      console.log('[BISD Call] Answer sent to', targetUser.user_id);
     } catch (err) {
-      if (!error) setError('Could not answer call. Check microphone/camera permissions.');
+      if (!error) setError('Could not accept call. Check microphone permissions.');
       setTimeout(endCall, 3000);
     }
   };
@@ -229,7 +231,7 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
   const rejectCall = () => {
     if (endedRef.current) return;
     endedRef.current = true;
-    wsSend({ type: 'call_reject', target_id: targetUser.user_id });
+    wsSend(wsRef, { type: 'call_reject', target_id: targetUser.user_id });
     cleanup();
     onEnd();
   };
@@ -242,6 +244,7 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
     localStreamRef.current?.getVideoTracks().forEach(t => { t.enabled = videoOff; });
     setVideoOff(v => !v);
   };
+
   const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const isVideo = callType.current === 'video';
 
@@ -251,19 +254,18 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
         {isVideo && status === 'connected' && (
           <div className="relative bg-black" style={{ aspectRatio: '16/9' }}>
             <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-            <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-2 right-2 w-24 rounded-lg border border-white/20 object-cover" />
+            <video ref={localVideoRef} autoPlay playsInline muted
+              className="absolute bottom-2 right-2 w-24 rounded-lg border border-white/20 object-cover" />
           </div>
         )}
         <div className="p-6 text-center text-white">
           {!(isVideo && status === 'connected') && (
             <div className="mb-4">
-              {targetUser.profile_picture ? (
-                <img src={targetUser.profile_picture} alt="" className="w-20 h-20 rounded-full mx-auto border-2 border-white/20 object-cover" />
-              ) : (
-                <div className="w-20 h-20 rounded-full mx-auto bg-white/10 flex items-center justify-center text-3xl font-black border-2 border-white/20">
-                  {(targetUser.display_name || '?')[0].toUpperCase()}
-                </div>
-              )}
+              {targetUser.profile_picture
+                ? <img src={targetUser.profile_picture} alt="" className="w-20 h-20 rounded-full mx-auto object-cover border-2 border-white/20" />
+                : <div className="w-20 h-20 rounded-full mx-auto bg-white/10 flex items-center justify-center text-3xl font-black border-2 border-white/20">
+                    {(targetUser.display_name || '?')[0].toUpperCase()}
+                  </div>}
             </div>
           )}
           <p className="text-lg font-bold">{targetUser.display_name}</p>
@@ -274,10 +276,9 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
             {status === 'connected' && `🟢 ${fmt(callDuration)}`}
             {status === 'reconnecting...' && '🔄 Reconnecting...'}
           </p>
-          {error && (
-            <div className="mt-3 px-3 py-2 bg-red-900/50 rounded-lg text-xs text-red-300 text-left">{error}</div>
-          )}
+          {error && <div className="mt-3 px-3 py-2 bg-red-900/50 rounded-lg text-xs text-red-300 text-left">{error}</div>}
         </div>
+
         <div className="flex items-center justify-center gap-4 p-6 pt-0">
           {status === 'ringing' ? (
             <>
@@ -293,12 +294,12 @@ const CallUI = ({ wsRef, user, targetUser, callType: initialCallType, isIncoming
           ) : (
             <>
               <button onClick={toggleMute} data-testid="toggle-mute"
-                className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${muted ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'} text-white`}>
+                className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors text-white ${muted ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'}`}>
                 {muted ? <MicrophoneSlash size={20} weight="fill" /> : <Microphone size={20} weight="fill" />}
               </button>
               {isVideo && (
                 <button onClick={toggleVideo} data-testid="toggle-video"
-                  className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${videoOff ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'} text-white`}>
+                  className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors text-white ${videoOff ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'}`}>
                   {videoOff ? <VideoCameraSlash size={20} weight="fill" /> : <VideoCamera size={20} weight="fill" />}
                 </button>
               )}
