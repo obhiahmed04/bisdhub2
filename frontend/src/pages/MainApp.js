@@ -57,28 +57,12 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const searchTimeoutRef = useRef(null);
 
   useEffect(() => {
+    loadFeed();
+    loadDMConversations();
+    loadChatRooms();
     requestNotificationPermission();
-
-    // Start polling immediately so UI works before WS connects
-    startPollingFallbacks();
-
-    // Load data — this wakes Render if it's sleeping
-    const init = async () => {
-      try {
-        await Promise.all([loadFeed(), loadDMConversations(), loadChatRooms()]);
-      } catch {}
-      // Server is now awake — safe to connect WebSocket
-      connectWebSocket();
-    };
-    init();
-
-    return () => {
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (chatPollRef.current) clearInterval(chatPollRef.current);
-      if (dmPollRef.current) clearInterval(dmPollRef.current);
-      if (wsRef.current) { try { wsRef.current.close(); } catch {} }
-    };
+    const cleanup = connectWebSocket();
+    return cleanup;
   }, []);
 
   // Handle incoming DM navigation from profile page
@@ -101,8 +85,6 @@ const MainApp = ({ user, onLogout, updateUser }) => {
       }
     }
   }, [activeChatRoom]);
-
-
 
   useEffect(() => {
     if (activeDM) loadDMMessages();
@@ -128,177 +110,81 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     api.get(`/posts/${viewLikersPost.post_id}/likes`).then(r => setLikers(r.data)).catch(() => setLikers([]));
   }, [viewLikersPost]);
 
-  // ── Stable refs that never change reference ────────────────────────────────
-  const activeChatRoomRef = useRef(activeChatRoom);
-  useEffect(() => { activeChatRoomRef.current = activeChatRoom; }, [activeChatRoom]);
-  const activeDMRef = useRef(activeDM);
-  useEffect(() => { activeDMRef.current = activeDM; }, [activeDM]);
-  // reconnect backoff state (in ref to avoid re-renders)
-  const retryCountRef = useRef(0);
-  const pingIntervalRef = useRef(null);
-  const chatPollRef = useRef(null);
-  const dmPollRef = useRef(null);
-
-  // Message handler — defined as a ref so socket.onmessage is always current
-  const messageHandlerRef = useRef(null);
-  messageHandlerRef.current = (event) => {
-    let data;
-    try { data = JSON.parse(event.data); } catch { return; }
-    if (data.type === 'pong') return;
-    if (data.type === 'ticket_update') {
-      window.dispatchEvent(new CustomEvent('ticket_update', { detail: data }));
-      return;
-    }
-    if (data.type === 'chat_message') {
-      setChatMessages(prev => {
-        if (prev.some(m => m.message_id === data.message_id)) return prev;
-        return [...prev, data];
-      });
-      // Stop chat poll while WS works
-      if (chatPollRef.current) { clearInterval(chatPollRef.current); chatPollRef.current = null; }
-    }
-    if (data.type === 'dm') {
-      setDmMessages(prev => {
-        if (prev.some(m => m.dm_id === data.dm_id)) return prev;
-        return [...prev, data];
-      });
-      loadDMConversations();
-      // Stop dm poll while WS works
-      if (dmPollRef.current) { clearInterval(dmPollRef.current); dmPollRef.current = null; }
-    }
-    if (data.type === 'reaction_update') {
-      setChatMessages(prev => prev.map(m => m.message_id === data.message_id ? { ...m, reactions: data.reactions } : m));
-    }
-    if (data.type === 'call_offer') {
-      setIncomingCall({ caller_id: data.caller_id, caller_name: data.caller_name, caller_picture: data.caller_picture, call_type: data.call_type, sdp: data.sdp });
-    }
-    if (data.type === 'call_unavailable') {
-      toast.error('User is not available for calls right now');
-      setActiveCall(null);
-    }
-    if (data.type === 'call_answer' || data.type === 'ice_candidate' || data.type === 'call_end' || data.type === 'call_reject') {
-      // Forward call signaling events to CallUI via custom event
-      window.dispatchEvent(new CustomEvent('ws_call_event', { detail: data }));
-    }
-  };
-
   const connectWebSocket = () => {
-    // Clear any existing ping
-    if (pingIntervalRef.current) { clearInterval(pingIntervalRef.current); pingIntervalRef.current = null; }
-
     const wsUrl = `${WS_BASE}/${user.user_id}`;
-    let socket;
-    try { socket = new WebSocket(wsUrl); }
-    catch (e) {
-      console.error('WS create failed', e);
-      scheduleReconnect();
-      return;
-    }
+    const socket = new WebSocket(wsUrl);
     wsRef.current = socket;
 
     socket.onopen = () => {
+      console.log('[BISD] WebSocket connected:', wsUrl);
       setWsReady(true);
-      retryCountRef.current = 0; // reset backoff on success
-      setWs(socket); // update state so CallUI re-renders with new socket
-
-      socket.send(JSON.stringify({ type: 'join_room', room: activeChatRoomRef.current }));
+      socket.send(JSON.stringify({ type: 'join_room', room: activeChatRoom }));
       loadChatMessages();
-
-      // Stop polling fallbacks — WS is live
-      if (chatPollRef.current) { clearInterval(chatPollRef.current); chatPollRef.current = null; }
-      if (dmPollRef.current) { clearInterval(dmPollRef.current); dmPollRef.current = null; }
-
-      // Keepalive ping every 20 seconds (Render drops idle WS at ~60s)
-      pingIntervalRef.current = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 20000);
+      // Keepalive ping every 25s — stops Render from killing idle sockets
+      if (window._bisdPing) clearInterval(window._bisdPing);
+      window._bisdPing = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ping' }));
+      }, 25000);
     };
 
-    // Use ref-based handler so it always has current state closures
-    socket.onmessage = (event) => { messageHandlerRef.current?.(event); };
-
-    socket.onerror = () => { setWsReady(false); };
-
-    socket.onclose = () => {
-      setWsReady(false);
-      if (pingIntervalRef.current) { clearInterval(pingIntervalRef.current); pingIntervalRef.current = null; }
-
-      // Start polling fallbacks while WS is down
-      startPollingFallbacks();
-      scheduleReconnect();
-    };
-  };
-
-  const scheduleReconnect = () => {
-    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-    // Exponential backoff: 2s, 4s, 8s, 16s, max 30s
-    const delay = Math.min(2000 * Math.pow(2, retryCountRef.current), 30000);
-    retryCountRef.current += 1;
-    reconnectTimeoutRef.current = setTimeout(() => {
-      reconnectTimeoutRef.current = null;
-      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-        connectWebSocket();
-      }
-    }, delay);
-  };
-
-  const manualReconnect = () => {
-    retryCountRef.current = 0;
-    if (wsRef.current) { try { wsRef.current.close(); } catch {} }
-    wsRef.current = null;
-    connectWebSocket();
-  };
-
-  const startPollingFallbacks = () => {
-    // Chat polling every 5s when WS is down
-    if (!chatPollRef.current) {
-      chatPollRef.current = setInterval(() => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          clearInterval(chatPollRef.current); chatPollRef.current = null; return;
-        }
-        api.get(`/chat/${activeChatRoomRef.current}/messages`).then(r => {
-          setChatMessages(r.data || []);
-        }).catch(() => {});
-      }, 5000);
-    }
-    // DM polling every 4s when WS is down
-    if (!dmPollRef.current) {
-      dmPollRef.current = setInterval(() => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          clearInterval(dmPollRef.current); dmPollRef.current = null; return;
-        }
-        if (activeDMRef.current) {
-          api.get(`/dm/${activeDMRef.current}/messages`).then(r => {
-            setDmMessages(r.data || []);
-          }).catch(() => {});
-        }
-        loadDMConversations();
-      }, 4000);
-    }
-  };
-
-  const [feedPage, setFeedPage] = useState(0);
-  const [hasMorePosts, setHasMorePosts] = useState(true);
-  const FEED_LIMIT = 50;
-
-  const loadFeed = async (reset = true) => {
-    try {
-      const skip = reset ? 0 : feedPage * FEED_LIMIT;
-      const response = await api.get(`/posts/feed/${feedType}?skip=${skip}&limit=${FEED_LIMIT}`);
-      const newPosts = (response.data || []).filter(p => !p.repost_of);
-      if (reset) {
-        setPosts(newPosts);
-        setFeedPage(1);
-      } else {
-        setPosts(prev => {
-          const ids = new Set(prev.map(p => p.post_id));
-          return [...prev, ...newPosts.filter(p => !ids.has(p.post_id))];
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'chat_message') {
+        setChatMessages(prev => {
+          if (prev.some(m => m.message_id === data.message_id)) return prev;
+          return [...prev, data];
         });
-        setFeedPage(prev => prev + 1);
       }
-      setHasMorePosts(response.data.length === FEED_LIMIT);
+      if (data.type === 'dm') {
+        setDmMessages(prev => {
+          if (prev.some(m => m.dm_id === data.dm_id)) return prev;
+          return [...prev, data];
+        });
+        loadDMConversations();
+      }
+      if (data.type === 'reaction_update') {
+        setChatMessages(prev => prev.map(m => m.message_id === data.message_id ? { ...m, reactions: data.reactions } : m));
+      }
+      // Incoming call handling
+      if (data.type === 'call_offer') {
+        setIncomingCall({ caller_id: data.caller_id, caller_name: data.caller_name, caller_picture: data.caller_picture, call_type: data.call_type, sdp: data.sdp });
+      }
+      if (data.type === 'call_unavailable') {
+        toast.error('User is not available for calls right now');
+        setActiveCall(null);
+      }
+      // Forward WebRTC signaling events to CallUI
+      if (['call_answer','ice_candidate','call_end','call_reject'].includes(data.type)) {
+        window.dispatchEvent(new CustomEvent('ws_call_event', { detail: data }));
+      }
+    };
+
+    socket.onerror = (e) => { console.warn('[BISD] WebSocket error:', e); setWsReady(false); };
+    socket.onclose = (e) => {
+      console.log('[BISD] WebSocket closed. Code:', e.code, 'Reason:', e.reason);
+      clearInterval(window._bisdPing);
+      setWsReady(false);
+      // Auto-reconnect after 3 seconds, but only if not already scheduled
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+          connectWebSocket();
+        }
+      }, 3000);
+    };
+
+    setWs(socket);
+    return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      socket.close();
+    };
+  };
+
+  const loadFeed = async () => {
+    try {
+      const response = await api.get(`/posts/feed/${feedType}`);
+      setPosts(response.data);
     } catch (error) {
       console.error('Failed to load feed');
     }
@@ -329,8 +215,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
 
   const loadChatMessages = async () => {
     try {
-      const room = activeChatRoomRef.current || activeChatRoom;
-      const response = await api.get(`/chat/${room}/messages`);
+      const response = await api.get(`/chat/${activeChatRoom}/messages`);
       setChatMessages(response.data);
     } catch (error) {
       if (error.response?.status === 403) {
@@ -344,24 +229,23 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     const content = newChatMessage.trim();
     if (!content) return;
     setNewChatMessage('');
-    const replyTo = replyingTo?.message_id || null;
+    const replyTo = replyingTo?.message_id;
     setReplyingTo(null);
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      // Send via WebSocket (real-time)
       const payload = { type: 'chat_message', chat_room: activeChatRoom, content };
       if (replyTo) payload.reply_to = replyTo;
       wsRef.current.send(JSON.stringify(payload));
     } else {
-      // REST fallback — works when WebSocket is reconnecting
+      // WS not ready — use REST fallback (server broadcasts to all WS-connected members)
       try {
-        const res = await api.post('/chat/' + activeChatRoom + '/send', { content, reply_to: replyTo });
+        const res = await api.post(`/chat/${activeChatRoom}/send`, { content, reply_to: replyTo });
         setChatMessages(prev => {
           if (prev.some(m => m.message_id === res.data.message_id)) return prev;
           return [...prev, res.data];
         });
       } catch {
-        toast.error('Failed to send message');
+        toast.error('Message failed to send');
         setNewChatMessage(content);
       }
     }
@@ -391,37 +275,21 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     const images = [...dmAttachImages];
     setNewDMMessage('');
     setDmAttachImages([]);
-
-    // Optimistic update — show message instantly in sender UI
-    const tempId = `temp_${Date.now()}`;
-    const optimisticMsg = {
-      dm_id: tempId,
-      sender_id: user.user_id,
-      receiver_id: activeDM,
-      content,
-      images,
-      created_at: new Date().toISOString(),
-      _pending: true
-    };
-    setDmMessages(prev => [...prev, optimisticMsg]);
+    // Optimistic update
+    const tempId = `tmp_${Date.now()}`;
+    setDmMessages(prev => [...prev, { dm_id: tempId, sender_id: user.user_id, receiver_id: activeDM, content, images, created_at: new Date().toISOString(), _pending: true }]);
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      // WS: server will echo back the real message; remove optimistic when real arrives
       wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content, images }));
-      // Remove optimistic after server echo arrives (clean up temp after 3s)
-      setTimeout(() => {
-        setDmMessages(prev => prev.filter(m => m.dm_id !== tempId));
-      }, 3000);
+      // Server echoes back real message; remove temp after short delay
+      setTimeout(() => setDmMessages(prev => prev.filter(m => m.dm_id !== tempId)), 3000);
     } else {
-      // REST fallback
       try {
         const res = await api.post(`/dm/${activeDM}/send`, { content, images });
-        // Replace optimistic with real message from server
-        setDmMessages(prev => prev.map(m => m.dm_id === tempId ? { ...res.data, dm_id: res.data.dm_id || tempId } : m));
+        setDmMessages(prev => prev.map(m => m.dm_id === tempId ? { ...res.data } : m));
         loadDMConversations();
       } catch {
-        toast.error('Failed to send message — check your connection');
-        // Remove optimistic and restore input
+        toast.error('Failed to send message');
         setDmMessages(prev => prev.filter(m => m.dm_id !== tempId));
         setNewDMMessage(content);
       }
@@ -479,12 +347,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const repostPost = async (postId) => {
     try {
       await api.post(`/posts/${postId}/repost`);
-      toast.success('Reposted! View it in your profile Reposts tab.');
-      loadFeed(true);
+      toast.success('Post reposted!');
+      loadFeed();
     } catch (error) {
-      const msg = error.response?.data?.detail || 'Failed to repost';
-      if (msg.includes('already reposted')) toast.info('You already reposted this post.');
-      else toast.error(msg);
+      toast.error('Failed to repost');
     }
   };
 
@@ -740,7 +606,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       {/* Voice Note */}
                       {post.voice_url && (
                         <div className="mb-3 bg-[#F5F5F5] border-2 border-[#111111] rounded-xl px-3 py-2">
-                          <VoicePlayer src={resolveAssetUrl(post.voice_url)} dark={false} />
+                          <VoicePlayer src={resolveAssetUrl(post.voice_url)} />
                         </div>
                       )}
                       
@@ -803,15 +669,6 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                   ))}
                 </div>
               </ScrollArea>
-              {hasMorePosts && (
-                <div className="p-3 text-center">
-                  <button onClick={() => loadFeed(false)}
-                    className="px-6 py-2 rounded-xl text-sm font-bold border-2 border-[#111111] bg-white hover:bg-[#f5f5f5] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)]"
-                    style={{ color: 'var(--text-1)' }}>
-                    Load more posts
-                  </button>
-                </div>
-              )}
             </div>
 
             {/* Right Sidebar - Search */}
@@ -848,11 +705,8 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                               <AvatarFallback className="text-xs">{getPublicName(u)?.[1] || 'U'}</AvatarFallback>
                             </Avatar>
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-bold truncate">
-                                {getPublicName(u)}
-                                {u.profile_locked && <span className="ml-1 text-[10px] opacity-60">🔒</span>}
-                              </p>
-                              <p className="text-[10px] text-[#4B4B4B]">{u.profile_locked ? 'Private profile' : (getSecondaryIdentity(u) || `@${u.id_number}`)}</p>
+                              <p className="text-sm font-bold truncate">{getPublicName(u)}</p>
+                              <p className="text-[10px] text-[#4B4B4B]">{getSecondaryIdentity(u) || `@${u.id_number}`}</p>
                             </div>
                           </div>
                         ))}
@@ -914,17 +768,9 @@ const MainApp = ({ user, onLogout, updateUser }) => {
               <div className="bg-white border-2 border-[#111111] rounded-xl shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] flex-1 flex flex-col p-4 overflow-hidden">
                 <div className="flex items-center justify-between mb-3 pb-2" style={{ borderBottom: '1px solid var(--border)' }}>
                   <h3 className="font-bold text-sm" style={{ color: 'var(--text-1)' }}>{chatRooms.find(r => r.id === activeChatRoom)?.name || 'Chat'}</h3>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-                      {wsReady ? '● Live' : '● Polling (connecting...)'}
-                    </span>
-                    {!wsReady && (
-                      <button onClick={manualReconnect} className="text-xs font-bold px-2 py-0.5 rounded-lg"
-                        style={{ background: 'var(--blue)', color: '#fff' }}>
-                        Retry now
-                      </button>
-                    )}
-                  </div>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {wsReady ? '● Live' : '● Polling (WS reconnecting)'}
+                  </span>
                 </div>
                 <ScrollArea className="flex-1 mb-3">
                   <div className="space-y-3">
@@ -945,7 +791,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                             <p className="text-[10px] font-bold opacity-70 mb-0.5">{getPublicName(msg.user)}</p>
                           )}
                           <p className="text-sm">{msg.content}</p>
-                          {msg.voice_url && <VoicePlayer src={resolveAssetUrl(msg.voice_url)} dark={msg.sender_id === user.user_id} />}
+                          {msg.voice_url && <VoicePlayer src={`${API_BASE}${msg.voice_url}`} />}
                           <p className={`text-[10px] mt-0.5 ${msg.user_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.user_id !== user.user_id ? 'var(--text-3)' : undefined }}>
                             {formatChatTime(msg.created_at)}
                           </p>
@@ -1027,12 +873,11 @@ const MainApp = ({ user, onLogout, updateUser }) => {
         {/* DMs */}
         {activeTab === 'dm' && (
           <div className="flex-1 flex overflow-hidden">
-            <div className="w-72 border-r-2 border-[#111111] p-3 flex-shrink-0 flex flex-col" style={{ background: 'var(--bg-card)' }}>
-              <h2 className="text-sm font-black mb-3" style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--text-1)' }}>Direct Messages</h2>
+            <div className="w-72 bg-white border-r-2 border-[#111111] p-3 flex-shrink-0">
+              <h2 className="text-sm font-black mb-3" style={{ fontFamily: 'Outfit, sans-serif' }}>Direct Messages</h2>
               <Input data-testid="dm-search-input" value={dmSearchQuery} onChange={(e) => setDmSearchQuery(e.target.value)}
-                placeholder="Search conversations..." className="border border-[#D1D1D1] rounded-xl px-3 py-2 mb-3 text-xs"
-                style={{ background: 'var(--bg-input)', color: 'var(--text-1)' }} />
-              <ScrollArea className="flex-1 min-h-0">
+                placeholder="Search conversations..." className="border-2 border-[#111111] rounded-xl px-3 py-2 mb-3 shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] text-xs" />
+              <ScrollArea className="h-full">
                 <div className="space-y-1.5">
                   {filteredDMConversations.map((conv) => (
                     <button key={conv.user?.user_id} data-testid={`dm-conversation-${conv.user?.user_id}`}
@@ -1067,10 +912,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
             </div>
 
             {activeDM ? (
-              <div className="flex-1 flex flex-col p-3 min-w-0 overflow-hidden">
-                <div className="rounded-xl flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-c)' }}>
+              <div className="flex-1 flex flex-col p-4">
+                <div className="bg-white border-2 border-[#111111] rounded-xl shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] flex-1 flex flex-col p-4 overflow-hidden">
                   {/* DM Header with Call Buttons */}
-                  <div className="flex items-center gap-3 pb-3 mb-3 px-4 pt-4" style={{ borderBottom: "1px solid var(--border-c)" }}>
+                  <div className="flex items-center gap-3 pb-3 mb-3 border-b border-[#D1D1D1]">
                     <Avatar className="w-8 h-8 border border-[#111111] cursor-pointer"
                       onClick={() => activeDMUser?.id_number && navigate(`/profile/${activeDMUser.id_number}`)}>
                       <AvatarImage src={resolveAssetUrl(activeDMUser?.profile_picture)} />
@@ -1081,31 +926,26 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       {getPublicName(activeDMUser)}
                     </span>
                     <div className="flex gap-1.5">
-                      <button data-testid="dm-audio-call"
-                        onClick={() => { if (!wsReady) { toast.error('Chat must be connected to make calls'); return; } startCall('audio'); }}
-                        className={`p-2 rounded-lg border-2 border-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] ${wsReady ? 'bg-[#A7F3D0] text-[#111111] hover:translate-y-[1px] hover:translate-x-[1px]' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
-                        title={wsReady ? "Voice Call" : "Connecting... please wait"}>
+                      <button data-testid="dm-audio-call" onClick={() => startCall('audio')}
+                        className="p-2 rounded-lg border-2 border-[#111111] bg-[#A7F3D0] text-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]" title="Voice Call">
                         <Phone size={16} weight="bold" />
                       </button>
-                      <button data-testid="dm-video-call"
-                        onClick={() => { if (!wsReady) { toast.error('Chat must be connected to make calls'); return; } startCall('video'); }}
-                        className={`p-2 rounded-lg border-2 border-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] ${wsReady ? 'bg-[#2563EB] text-white hover:translate-y-[1px] hover:translate-x-[1px]' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
-                        title={wsReady ? "Video Call" : "Connecting... please wait"}>
+                      <button data-testid="dm-video-call" onClick={() => startCall('video')}
+                        className="p-2 rounded-lg border-2 border-[#111111] bg-[#2563EB] text-white shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]" title="Video Call">
                         <VideoCamera size={16} weight="bold" />
                       </button>
                     </div>
                   </div>
 
-                  <ScrollArea className="flex-1 mb-3" style={{ minHeight: 0 }}>
-                    <div className="space-y-3 p-1">
+                  <ScrollArea className="flex-1 mb-3">
+                    <div className="space-y-3">
                       {dmMessages.map((msg) => (
                         <div key={msg.dm_id} className={`flex ${msg.sender_id === user.user_id ? 'justify-end' : 'justify-start'}`}>
                           <div className={`max-w-[75%] ${
                             msg.sender_id === user.user_id
                               ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
-                              : 'rounded-2xl rounded-bl-sm px-3 py-2'
-                          } ${msg._pending ? 'opacity-60' : ''}`}
-                          style={msg.sender_id !== user.user_id ? { background: 'var(--bg-surface)' } : {}}>
+                              : 'bg-[#F5F5F5] rounded-2xl rounded-bl-sm px-3 py-2'
+                          }`}>
                             <p className="text-sm">{msg.content}</p>
                             {msg.images?.length > 0 && (
                               <div className="mt-1.5">
@@ -1114,7 +954,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                                 ))}
                               </div>
                             )}
-                            {msg.voice_url && <VoicePlayer src={resolveAssetUrl(msg.voice_url)} dark={msg.sender_id === user.user_id} />}
+                            {msg.voice_url && <VoicePlayer src={`${API_BASE}${msg.voice_url}`} />}
                             <p className={`text-[10px] mt-0.5 ${msg.sender_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.sender_id !== user.user_id ? 'var(--text-3)' : undefined }}>
                               {formatChatTime(msg.created_at)}
                             </p>
@@ -1137,7 +977,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                       ))}
                     </div>
                   )}
-                  <div className="flex gap-2 px-4 pb-4">
+                  <div className="flex gap-2">
                     <VoiceRecorder onSend={sendVoiceDM} compact />
                     <button onClick={() => dmFileRef.current?.click()} data-testid="dm-attach-image"
                       className="p-2 rounded-lg border-2 border-[#111111] bg-white text-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]">
