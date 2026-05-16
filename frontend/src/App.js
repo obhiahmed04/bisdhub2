@@ -12,6 +12,7 @@ import ManagementPanel from './pages/ManagementPanel';
 import UserProfile from './pages/UserProfile';
 import TooYoungPage from './pages/TooYoungPage';
 import NotificationsPage from './pages/NotificationsPage';
+import GlobalChatArchivePage from './pages/GlobalChatArchivePage';
 import SettingsPage from './pages/SettingsPage';
 import FriendsPage from './pages/FriendsPage';
 import SearchResultsPage from './pages/SearchResultsPage';
@@ -65,6 +66,7 @@ function App() {
             <Route path="/login" element={token ? <Navigate to="/" /> : <LoginPage onLogin={login} />} />
             <Route path="/register" element={<RegistrationPage />} />
             <Route path="/too-young" element={<TooYoungPage />} />
+            <Route path="/chat-archive" element={token && !isRestricted ? <GlobalChatArchivePage user={user} /> : <Navigate to="/login" />} />
             <Route path="/notifications" element={token && !isRestricted ? <NotificationsPage user={user} /> : <Navigate to="/login" />} />
             <Route path="/pending-registration" element={<PendingRegistrationWrapper />} />
             <Route path="/banned" element={token && isBanned ? <BannedPage user={user} onLogout={logout} /> : <Navigate to="/" />} />

@@ -436,19 +436,26 @@ const MainApp = ({ user, onLogout, updateUser }) => {
             { id: 'home', icon: House, label: 'Home' },
             { id: 'chat', icon: ChatCircleDots, label: 'Global Chat' },
             { id: 'dm', icon: PaperPlaneTilt, label: 'Messages' },
-          ].map(item => (
-            <button
-              key={item.id}
-              data-testid={`nav-${item.id}`}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-bold border-2 border-[#111111] text-sm transition-all ${
-                activeTab === item.id ? 'bg-[#2563EB] text-white' : 'bg-white text-[#111111]'
-              } shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]`}
-            >
-              <item.icon size={18} weight="bold" />
-              {item.label}
-            </button>
-          ))}
+          ].map(item => {
+            const dmUnread = item.id === 'dm' ? dmConversations.reduce((a,c) => a+(c.unread_count||0), 0) : 0;
+            return (
+              <button
+                key={item.id}
+                data-testid={`nav-${item.id}`}
+                onClick={() => setActiveTab(item.id)}
+                className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-bold border-2 border-[#111111] text-sm transition-all ${
+                  activeTab === item.id ? 'bg-[#2563EB] text-white' : 'bg-white text-[#111111]'
+                } shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px]`}
+              >
+                <item.icon size={18} weight="bold" />
+                {item.label}
+                {dmUnread > 0 && (
+                  <span className="absolute top-1 right-2 text-[9px] font-black text-white rounded-full min-w-[16px] h-4 flex items-center justify-center px-1"
+                    style={{ background: '#FF6B6B' }}>{dmUnread > 9 ? '9+' : dmUnread}</span>
+                )}
+              </button>
+            );
+          })}
 
           <button
             data-testid="nav-friends"
@@ -457,6 +464,12 @@ const MainApp = ({ user, onLogout, updateUser }) => {
           >
             <UsersThree size={18} weight="bold" /> Friends
           </button>
+          {(user?.is_admin || user?.is_moderator) && (
+            <button onClick={() => navigate('/chat-archive')}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-bold border-2 border-[#111111] bg-white text-[#111111] shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[1px] hover:translate-x-[1px] text-sm">
+              📁 Chat Archive
+            </button>
+          )}
 
           <button
             data-testid="nav-profile"
@@ -511,7 +524,14 @@ const MainApp = ({ user, onLogout, updateUser }) => {
         ].map(item => (
           <button key={item.id} onClick={() => setActiveTab(item.id)}
             className={`p-2 rounded-lg ${activeTab === item.id ? 'text-[#2563EB]' : 'text-[#4B4B4B]'}`}>
-            <item.icon size={24} weight={activeTab === item.id ? 'fill' : 'bold'} />
+            <div className="relative">
+              <item.icon size={24} weight={activeTab === item.id ? 'fill' : 'bold'} />
+              {item.id === 'dm' && dmConversations.reduce((a,c)=>a+(c.unread_count||0),0) > 0 && (
+                <span className="absolute -top-1 -right-1 text-[8px] font-black text-white rounded-full w-3.5 h-3.5 flex items-center justify-center" style={{background:'#FF6B6B'}}>
+                  {dmConversations.reduce((a,c)=>a+(c.unread_count||0),0)}
+                </span>
+              )}
+            </div>
           </button>
         ))}
         <button onClick={() => navigate('/friends')} className="p-2 text-[#4B4B4B]">
@@ -638,9 +658,11 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <ChatCircle size={18} weight="bold" />
                           {post.comments?.length || 0}
                         </button>
-                        <button onClick={() => repostPost(post.post_id)}
-                          className="flex items-center gap-1.5 text-[#4B4B4B] hover:text-[#16a34a] font-medium" data-testid={`repost-${post.post_id}`}>
-                          <ArrowsClockwise size={18} weight="bold" />
+                        <button onClick={() => post.is_reposted_by_me ? unrepostPost(post.post_id) : repostPost(post.post_id)}
+                          className="flex items-center gap-1.5 font-medium transition-colors" data-testid={`repost-${post.post_id}`}
+                          style={{ color: post.is_reposted_by_me ? '#16a34a' : 'var(--text-3)' }}
+                          title={post.is_reposted_by_me ? 'Click to remove repost' : 'Repost'}>
+                          <ArrowsClockwise size={18} weight={post.is_reposted_by_me ? 'fill' : 'bold'} />
                           {post.share_count || 0}
                         </button>
                         <button onClick={() => sharePost(post.post_id)}
@@ -779,7 +801,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                         <div className={`max-w-[75%] group relative ${
                           msg.user_id === user.user_id
                             ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
-                            : 'bg-[#F5F5F5] rounded-2xl rounded-bl-sm px-3 py-2'
+                            : 'rounded-2xl rounded-bl-sm px-3 py-2' } style={msg.sender_id !== user.user_id ? { background: 'var(--bg-surface)' } : {}
                         }`}>
                           {/* Reply preview */}
                           {msg.reply_data && (
@@ -791,7 +813,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                             <p className="text-[10px] font-bold opacity-70 mb-0.5">{getPublicName(msg.user)}</p>
                           )}
                           <p className="text-sm">{msg.content}</p>
-                          {msg.voice_url && <VoicePlayer src={`${API_BASE}${msg.voice_url}`} />}
+                          {msg.voice_url && <VoicePlayer src={msg.voice_url} dark={msg.sender_id === user.user_id} />}
                           <p className={`text-[10px] mt-0.5 ${msg.user_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.user_id !== user.user_id ? 'var(--text-3)' : undefined }}>
                             {formatChatTime(msg.created_at)}
                           </p>
@@ -826,6 +848,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                             )}
                           </div>
 
+                        </div>
                           {/* Emoji picker */}
                           {showEmojiPicker === msg.message_id && (
                             <div className="absolute -top-10 right-0 bg-white border border-gray-200 rounded-lg shadow-lg p-1 flex gap-0.5 z-10">
@@ -873,11 +896,14 @@ const MainApp = ({ user, onLogout, updateUser }) => {
         {/* DMs */}
         {activeTab === 'dm' && (
           <div className="flex-1 flex overflow-hidden">
-            <div className="w-72 bg-white border-r-2 border-[#111111] p-3 flex-shrink-0">
-              <h2 className="text-sm font-black mb-3" style={{ fontFamily: 'Outfit, sans-serif' }}>Direct Messages</h2>
+            {/* Conversation list — full width on mobile when no DM active, sidebar on desktop */}
+            <div className={`${activeDM ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-72 md:flex-shrink-0 border-r-0 md:border-r-2 border-[#111111] p-3`}
+              style={{ background: 'var(--bg-card)' }}>
+              <h2 className="text-sm font-black mb-3" style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--text-1)' }}>Direct Messages</h2>
               <Input data-testid="dm-search-input" value={dmSearchQuery} onChange={(e) => setDmSearchQuery(e.target.value)}
-                placeholder="Search conversations..." className="border-2 border-[#111111] rounded-xl px-3 py-2 mb-3 shadow-[2px_2px_0px_0px_rgba(17,17,17,1)] text-xs" />
-              <ScrollArea className="h-full">
+                placeholder="Search conversations..." className="border-2 border-[#111111] rounded-xl px-3 py-2 mb-3 text-xs"
+                style={{ background: 'var(--bg-input)', color: 'var(--text-1)' }} />
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="space-y-1.5">
                   {filteredDMConversations.map((conv) => (
                     <button key={conv.user?.user_id} data-testid={`dm-conversation-${conv.user?.user_id}`}
@@ -912,10 +938,16 @@ const MainApp = ({ user, onLogout, updateUser }) => {
             </div>
 
             {activeDM ? (
-              <div className="flex-1 flex flex-col p-4">
-                <div className="bg-white border-2 border-[#111111] rounded-xl shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] flex-1 flex flex-col p-4 overflow-hidden">
+              <div className="flex-1 flex flex-col p-0 md:p-3 min-w-0 overflow-hidden">
+                <div className="flex-1 flex flex-col overflow-hidden rounded-none md:rounded-xl"
+                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border-c)' }}>
                   {/* DM Header with Call Buttons */}
-                  <div className="flex items-center gap-3 pb-3 mb-3 border-b border-[#D1D1D1]">
+                  <div className="flex items-center gap-2 px-3 py-2.5 border-b" style={{ borderColor: 'var(--border-c)' }}>
+                    {/* Mobile back button */}
+                    <button className="md:hidden p-1.5 -ml-1 rounded-lg" onClick={() => { setActiveDM(null); setActiveDMUser(null); }}
+                      style={{ color: 'var(--text-1)', background: 'var(--bg-surface)' }}>
+                      <span className="text-sm font-bold">←</span>
+                    </button>
                     <Avatar className="w-8 h-8 border border-[#111111] cursor-pointer"
                       onClick={() => activeDMUser?.id_number && navigate(`/profile/${activeDMUser.id_number}`)}>
                       <AvatarImage src={resolveAssetUrl(activeDMUser?.profile_picture)} />
@@ -944,7 +976,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <div className={`max-w-[75%] ${
                             msg.sender_id === user.user_id
                               ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
-                              : 'bg-[#F5F5F5] rounded-2xl rounded-bl-sm px-3 py-2'
+                              : 'rounded-2xl rounded-bl-sm px-3 py-2' } style={msg.sender_id !== user.user_id ? { background: 'var(--bg-surface)' } : {}
                           }`}>
                             <p className="text-sm">{msg.content}</p>
                             {msg.images?.length > 0 && (
@@ -954,7 +986,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                                 ))}
                               </div>
                             )}
-                            {msg.voice_url && <VoicePlayer src={`${API_BASE}${msg.voice_url}`} />}
+                            {msg.voice_url && <VoicePlayer src={msg.voice_url} dark={msg.sender_id === user.user_id} />}
                             <p className={`text-[10px] mt-0.5 ${msg.sender_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.sender_id !== user.user_id ? 'var(--text-3)' : undefined }}>
                               {formatChatTime(msg.created_at)}
                             </p>
