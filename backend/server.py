@@ -2105,11 +2105,16 @@ async def get_all_help_chats(admin: User = Depends(verify_admin)):
 
 # WebSocket for real-time chat
 @app.websocket("/api/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: str):
+async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
     await manager.connect(user_id, websocket)
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                raise  # must propagate so the outer handler cleans up
+            except Exception:
+                continue  # only skip truly malformed/non-JSON frames
             
             if data['type'] == 'ping':
                 await manager.send_personal_message({"type": "pong"}, user_id)
@@ -2279,6 +2284,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     
     except WebSocketDisconnect:
         manager.disconnect(user_id)
+    except Exception:
+        manager.disconnect(user_id)
+        try: await websocket.close()
+        except: pass
 
 # File Upload endpoint
 @api_router.post("/upload")
