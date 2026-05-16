@@ -848,7 +848,6 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                             )}
                           </div>
 
-                        </div>
                           {/* Emoji picker */}
                           {showEmojiPicker === msg.message_id && (
                             <div className="absolute -top-10 right-0 bg-white border border-gray-200 rounded-lg shadow-lg p-1 flex gap-0.5 z-10">
