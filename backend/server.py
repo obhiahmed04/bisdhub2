@@ -2896,6 +2896,56 @@ async def verify_registration_email_otp(reg_id: str, request: dict):
     await db.registrations.update_one({"reg_id": reg_id}, {"$set": {"email": new_email}})
     return {"status": "success", "new_email": new_email}
 
+
+# REST fallback for sending chat messages when WebSocket is unavailable
+@api_router.post("/chat/{chat_room}/send")
+async def send_chat_message_rest(chat_room: str, message: dict, user: User = Depends(get_current_user)):
+    content = message.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content required")
+    
+    # Spam check
+    if check_spam(user.user_id):
+        raise HTTPException(status_code=429, detail="Sending too fast")
+    
+    last_msg = await db.chat_messages.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
+    next_serial = (last_msg.get("serial_number", 0) + 1) if last_msg else 1
+    
+    chat_msg = ChatMessage(
+        serial_number=next_serial,
+        chat_room=chat_room,
+        user_id=user.user_id,
+        content=content,
+        is_gif=message.get("is_gif", False),
+        voice_url=message.get("voice_url")
+    )
+    doc = chat_msg.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    if message.get("voice_url"):
+        doc["voice_url"] = message["voice_url"]
+    await db.chat_messages.insert_one(doc)
+    
+    ws_user = await db.users.find_one(
+        {"user_id": user.user_id},
+        {"_id": 0, "display_name": 1, "username": 1, "profile_picture": 1, "id_number": 1, "badges": 1, "role": 1}
+    )
+    broadcast_data = {
+        "type": "chat_message",
+        "message_id": doc["message_id"],
+        "serial_number": next_serial,
+        "chat_room": chat_room,
+        "user_id": user.user_id,
+        "content": content,
+        "created_at": doc["created_at"],
+        "is_gif": doc.get("is_gif", False),
+        "voice_url": doc.get("voice_url"),
+        "reactions": {},
+        "user": ws_user
+    }
+    # Broadcast to all connected room members in real-time
+    await manager.broadcast_to_room(broadcast_data, chat_room)
+    return broadcast_data
+
 # Spam detection - rate limiting per user
 spam_tracker = {}
 SPAM_WINDOW = 10  # seconds
