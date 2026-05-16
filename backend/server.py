@@ -360,7 +360,6 @@ class User(BaseModel):
     mute_until: Optional[str] = None
     registration_status: str = "approved"
     push_notifications_enabled: bool = True
-    show_age: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     followers: List[str] = Field(default_factory=list)
     following: List[str] = Field(default_factory=list)
@@ -427,9 +426,6 @@ class ProfileUpdate(BaseModel):
     is_following_public: Optional[bool] = None
     is_friends_public: Optional[bool] = None
     push_notifications_enabled: Optional[bool] = None
-    show_age: Optional[bool] = None
-    email: Optional[str] = None
-    phone_number: Optional[str] = None
 
 class PostCreate(BaseModel):
     content: str
@@ -532,7 +528,6 @@ class TicketCreate(BaseModel):
 
 class TicketReply(BaseModel):
     message: str
-    attachments: List[str] = []  # List of uploaded file URLs
 
 class Ticket(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1095,21 +1090,13 @@ async def search_users(
         ]
     }, {"_id": 0}).to_list(50)
     
-    # Return all profiles; frontend shows private ones with a lock icon
+    # Filter out private profiles
     results = []
     for u in users:
-        normalized = _normalize_user_doc(u)
-        user_obj = User(**normalized)
-        data = user_obj.model_dump(exclude={'password_hash'})
-        # Mark private profiles so frontend can show lock icon and restrict content
-        if not user_obj.is_profile_public and user_obj.user_id != user.user_id:
-            data['profile_locked'] = True
-            data['bio'] = ''
-            data['followers'] = []
-            data['following'] = []
-        else:
-            data['profile_locked'] = False
-        results.append(data)
+        user_obj = User(**_normalize_user_doc(u))
+        if user_obj.is_profile_public or user_obj.user_id == user.user_id:
+            results.append(user_obj.model_dump(exclude={'password_hash'}))
+    
     return results
 
 # Get user profile by ID number
@@ -1581,9 +1568,8 @@ async def repost(post_id: str, user: User = Depends(get_current_user)):
     original = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
     if not original:
         raise HTTPException(status_code=404, detail="Post not found")
-    # Prevent duplicate reposts from same user
-    already = await db.posts.find_one({"user_id": user.user_id, "repost_of": post_id}, {"_id": 0, "post_id": 1})
-    if already:
+    existing = await db.posts.find_one({"user_id": user.user_id, "repost_of": post_id}, {"_id": 0, "post_id": 1})
+    if existing:
         raise HTTPException(status_code=400, detail="You already reposted this post")
     
     # Get next serial number
@@ -1771,11 +1757,10 @@ async def send_dm(receiver_id: str, message: dict, user: User = Depends(get_curr
         f"New message from {user.display_name}"
     )
     
-    # Send via WebSocket in real-time to both parties
+    # Send realtime via WebSocket to both parties
     ws_payload = {**doc, "type": "dm"}
     await manager.send_personal_message(ws_payload, receiver_id)
     await manager.send_personal_message(ws_payload, user.user_id)
-    
     return dm
 
 # Admin: Get all users
@@ -2105,16 +2090,11 @@ async def get_all_help_chats(admin: User = Depends(verify_admin)):
 
 # WebSocket for real-time chat
 @app.websocket("/api/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str = ""):
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
     await manager.connect(user_id, websocket)
     try:
         while True:
-            try:
-                data = await websocket.receive_json()
-            except WebSocketDisconnect:
-                raise  # must propagate so the outer handler cleans up
-            except Exception:
-                continue  # only skip truly malformed/non-JSON frames
+            data = await websocket.receive_json()
             
             if data['type'] == 'ping':
                 await manager.send_personal_message({"type": "pong"}, user_id)
@@ -2138,17 +2118,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str = ""
                     user_id=user_id,
                     content=data['content'],
                     reply_to=data.get('reply_to'),
-                    is_gif=data.get('is_gif', False),
-                    voice_url=data.get('voice_url')
+                    is_gif=data.get('is_gif', False)
                 )
                 doc = chat_msg.model_dump()
                 doc['created_at'] = doc['created_at'].isoformat()
-                # Ensure voice_url is saved even if not in model
                 if data.get('voice_url'):
                     doc['voice_url'] = data['voice_url']
                 await db.chat_messages.insert_one(doc)
                 
-                ws_user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "display_name": 1, "profile_picture": 1, "id_number": 1, "badges": 1, "role": 1})
+                ws_user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "display_name": 1, "username": 1, "profile_picture": 1, "id_number": 1, "badges": 1, "role": 1})
                 
                 # Get reply message if replying
                 reply_data = None
@@ -2284,10 +2262,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str = ""
     
     except WebSocketDisconnect:
         manager.disconnect(user_id)
-    except Exception:
-        manager.disconnect(user_id)
-        try: await websocket.close()
-        except: pass
 
 # File Upload endpoint
 @api_router.post("/upload")
@@ -2631,16 +2605,6 @@ async def get_my_tickets(user: User = Depends(get_current_user)):
     tickets = await db.tickets.find({"created_by": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return tickets
 
-
-@api_router.get("/tickets/by-id-number/{id_number}")
-async def get_tickets_by_id_number(id_number: str):
-    """Get all tickets for a given id_number (for pending registration users)"""
-    tickets = await db.tickets.find(
-        {"created_by_id_number": id_number},
-        {"_id": 0}
-    ).sort("created_at", -1).to_list(50)
-    return tickets
-
 @api_router.get("/tickets/{ticket_id}")
 async def get_ticket(ticket_id: str, user: User = Depends(get_current_user)):
     ticket = await db.tickets.find_one({"ticket_id": ticket_id}, {"_id": 0})
@@ -2671,26 +2635,13 @@ async def reply_to_ticket(ticket_id: str, reply: TicketReply, user: User = Depen
         "sender_name": user.display_name,
         "sender_type": "admin" if (user.is_admin or user.is_moderator) else "user",
         "message": reply.message,
-        "attachments": reply.attachments if hasattr(reply, 'attachments') else [],
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     now = datetime.now(timezone.utc).isoformat()
-    new_status = "in_progress" if ticket['status'] == 'open' else ticket['status']
     await db.tickets.update_one(
         {"ticket_id": ticket_id},
-        {"$push": {"messages": message}, "$set": {"updated_at": now, "status": new_status}}
+        {"$push": {"messages": message}, "$set": {"updated_at": now, "status": "in_progress" if ticket['status'] == 'open' else ticket['status']}}
     )
-    # Send realtime WS notification to ticket owner
-    ws_notif = {"type": "ticket_update", "ticket_id": ticket_id, "message": message}
-    if ticket.get("created_by") and ticket["created_by"] != "anonymous":
-        await manager.send_personal_message(ws_notif, ticket["created_by"])
-    # Also notify all admins if this is a user reply
-    sender_type = "admin" if (user.is_admin or user.is_moderator) else "user"
-    if sender_type == "user":
-        for uid in list(manager.active_connections.keys()):
-            db_u = await db.users.find_one({"user_id": uid}, {"_id": 0, "is_admin": 1, "is_moderator": 1})
-            if db_u and (db_u.get("is_admin") or db_u.get("is_moderator")):
-                await manager.send_personal_message(ws_notif, uid)
     return {"status": "success"}
 
 @api_router.post("/tickets/anonymous/{ticket_id}/reply")
@@ -2740,211 +2691,60 @@ async def get_all_tickets(admin: User = Depends(verify_moderator), status: str =
     return tickets
 
 
-# Edit a post (owner only) - stores edit history
+# REST fallback: send chat message when WebSocket is not available
+@api_router.post("/chat/{chat_room}/send")
+async def send_chat_message_rest(chat_room: str, body: dict, user: User = Depends(get_current_user)):
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content required")
+    if check_spam(user.user_id):
+        raise HTTPException(status_code=429, detail="Too many messages")
+    last_msg = await db.chat_messages.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
+    next_serial = (last_msg.get("serial_number", 0) + 1) if last_msg else 1
+    chat_msg = ChatMessage(
+        serial_number=next_serial, chat_room=chat_room,
+        user_id=user.user_id, content=content,
+        reply_to=body.get("reply_to"), is_gif=body.get("is_gif", False)
+    )
+    doc = chat_msg.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.chat_messages.insert_one(doc)
+    ws_user = await db.users.find_one({"user_id": user.user_id},
+        {"_id": 0, "display_name": 1, "username": 1, "profile_picture": 1, "id_number": 1, "badges": 1, "role": 1})
+    broadcast = {
+        "type": "chat_message", "message_id": doc["message_id"],
+        "serial_number": next_serial, "chat_room": chat_room,
+        "user_id": user.user_id, "content": content,
+        "created_at": doc["created_at"], "reactions": {}, "user": ws_user
+    }
+    await manager.broadcast_to_room(broadcast, chat_room)
+    return broadcast
+
+
 @api_router.put("/posts/{post_id}")
 async def edit_post(post_id: str, update: dict, user: User = Depends(get_current_user)):
     post = await db.posts.find_one({"post_id": post_id}, {"_id": 0})
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     if post["user_id"] != user.user_id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized to edit this post")
-    
+        raise HTTPException(status_code=403, detail="Not authorized")
     new_content = update.get("content", "").strip()
     if not new_content:
         raise HTTPException(status_code=400, detail="Content cannot be empty")
-    
-    # Store edit history
-    edit_record = {
-        "old_content": post["content"],
-        "new_content": new_content,
-        "edited_at": datetime.now(timezone.utc).isoformat(),
-        "edited_by": user.user_id
-    }
-    
-    await db.posts.update_one(
-        {"post_id": post_id},
-        {
-            "$set": {"content": new_content, "edited": True, "edited_at": datetime.now(timezone.utc).isoformat()},
-            "$push": {"edit_history": edit_record}
-        }
-    )
-    return {"status": "success", "post_id": post_id}
+    edit_record = {"old_content": post["content"], "new_content": new_content,
+                   "edited_at": datetime.now(timezone.utc).isoformat()}
+    await db.posts.update_one({"post_id": post_id}, {
+        "$set": {"content": new_content, "edited": True},
+        "$push": {"edit_history": edit_record}
+    })
+    return {"status": "success"}
 
 @api_router.get("/posts/{post_id}/edit-history")
 async def get_edit_history(post_id: str, user: User = Depends(get_current_user)):
-    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0, "edit_history": 1, "user_id": 1})
+    post = await db.posts.find_one({"post_id": post_id}, {"_id": 0, "edit_history": 1})
     if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+        raise HTTPException(status_code=404, detail="Not found")
     return post.get("edit_history", [])
-
-
-# ── Email Change with OTP verification ──────────────────────────────────────
-@api_router.post("/auth/request-email-change")
-async def request_email_change(request: dict, user: User = Depends(get_current_user)):
-    new_email = request.get("new_email", "").strip().lower()
-    if not new_email or "@" not in new_email:
-        raise HTTPException(status_code=400, detail="Invalid email address")
-    # Check if email already in use
-    existing = await db.users.find_one({"email": new_email}, {"_id": 0, "user_id": 1})
-    if existing and existing["user_id"] != user.user_id:
-        raise HTTPException(status_code=400, detail="Email already in use by another account")
-    otp = str(random.randint(100000, 999999))
-    otp_storage[f"email_change_{user.user_id}"] = {
-        "otp": otp,
-        "new_email": new_email,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
-    }
-    email_sent = await send_otp_email(new_email, otp)
-    masked = new_email[:3] + "***" + new_email[new_email.index("@"):]
-    if email_sent:
-        return {"status": "success", "message": f"OTP sent to {masked}"}
-    else:
-        logger.info(f"Email change OTP for {user.user_id}: {otp}")
-        return {"status": "success", "message": f"OTP sent to {masked}", "dev_otp": otp}
-
-@api_router.post("/auth/verify-email-change")
-async def verify_email_change(request: dict, user: User = Depends(get_current_user)):
-    otp = request.get("otp", "")
-    stored = otp_storage.get(f"email_change_{user.user_id}")
-    if not stored:
-        raise HTTPException(status_code=400, detail="No pending email change. Request a new OTP.")
-    if stored["expires_at"] < datetime.now(timezone.utc):
-        del otp_storage[f"email_change_{user.user_id}"]
-        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
-    if stored["otp"] != otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    new_email = stored["new_email"]
-    del otp_storage[f"email_change_{user.user_id}"]
-    await db.users.update_one({"user_id": user.user_id}, {"$set": {"email": new_email}})
-    return {"status": "success", "message": "Email updated successfully", "new_email": new_email}
-
-# ── Email-based Password Change (dev: returns link, prod: sends email) ──────
-@api_router.post("/auth/request-password-change-link")
-async def request_password_change_link(user: User = Depends(get_current_user)):
-    db_user = await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "email": 1})
-    email = db_user.get("email") if db_user else None
-    if not email:
-        raise HTTPException(status_code=400, detail="No email on account. Use password form instead.")
-    otp = str(random.randint(100000, 999999))
-    otp_storage[f"pwchange_{user.user_id}"] = {
-        "otp": otp,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=30)
-    }
-    # Dev: Return OTP in response + log it. Prod: send via email
-    email_sent = await send_otp_email(email, otp)
-    masked = email[:3] + "***" + email[email.index("@"):]
-    dev_link = f"/settings?pw_otp={otp}&uid={user.user_id}"
-    if email_sent:
-        return {"status": "success", "message": f"Password change code sent to {masked}", "dev_link": dev_link}
-    else:
-        logger.info(f"Password change OTP for {user.user_id}: {otp}")
-        return {"status": "success", "message": f"[DEV] Password change OTP: {otp}", "dev_otp": otp, "dev_link": dev_link}
-
-@api_router.post("/auth/verify-password-change-link")
-async def verify_password_change_link(request: dict, user: User = Depends(get_current_user)):
-    otp = request.get("otp", "")
-    new_password = request.get("new_password", "")
-    if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    stored = otp_storage.get(f"pwchange_{user.user_id}")
-    if not stored:
-        raise HTTPException(status_code=400, detail="No pending request. Request a new code.")
-    if stored["expires_at"] < datetime.now(timezone.utc):
-        del otp_storage[f"pwchange_{user.user_id}"]
-        raise HTTPException(status_code=400, detail="Code expired")
-    if stored["otp"] != otp:
-        raise HTTPException(status_code=400, detail="Invalid code")
-    del otp_storage[f"pwchange_{user.user_id}"]
-    new_hash = await asyncio.to_thread(
-        lambda: bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    )
-    await db.users.update_one({"user_id": user.user_id}, {"$set": {"password_hash": new_hash}})
-    return {"status": "success", "message": "Password changed successfully"}
-
-# ── Registration email change with OTP ──────────────────────────────────────
-@api_router.post("/auth/registration/{reg_id}/request-email-otp")
-async def request_registration_email_otp(reg_id: str, request: dict):
-    new_email = request.get("new_email", "").strip().lower()
-    if not new_email or "@" not in new_email:
-        raise HTTPException(status_code=400, detail="Invalid email address")
-    otp = str(random.randint(100000, 999999))
-    otp_storage[f"reg_email_{reg_id}"] = {
-        "otp": otp,
-        "new_email": new_email,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
-    }
-    email_sent = await send_otp_email(new_email, otp)
-    masked = new_email[:3] + "***" + new_email[new_email.index("@"):]
-    if email_sent:
-        return {"status": "success", "message": f"OTP sent to {masked}"}
-    else:
-        return {"status": "success", "message": f"OTP sent to {masked}", "dev_otp": otp}
-
-@api_router.post("/auth/registration/{reg_id}/verify-email-otp")
-async def verify_registration_email_otp(reg_id: str, request: dict):
-    otp = request.get("otp", "")
-    stored = otp_storage.get(f"reg_email_{reg_id}")
-    if not stored:
-        raise HTTPException(status_code=400, detail="No pending OTP. Request a new one.")
-    if stored["expires_at"] < datetime.now(timezone.utc):
-        del otp_storage[f"reg_email_{reg_id}"]
-        raise HTTPException(status_code=400, detail="OTP expired")
-    if stored["otp"] != otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    new_email = stored["new_email"]
-    del otp_storage[f"reg_email_{reg_id}"]
-    await db.registrations.update_one({"reg_id": reg_id}, {"$set": {"email": new_email}})
-    return {"status": "success", "new_email": new_email}
-
-
-# REST fallback for sending chat messages when WebSocket is unavailable
-@api_router.post("/chat/{chat_room}/send")
-async def send_chat_message_rest(chat_room: str, message: dict, user: User = Depends(get_current_user)):
-    content = message.get("content", "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Message content required")
-    
-    # Spam check
-    if check_spam(user.user_id):
-        raise HTTPException(status_code=429, detail="Sending too fast")
-    
-    last_msg = await db.chat_messages.find_one({}, {"serial_number": 1, "_id": 0}, sort=[("serial_number", -1)])
-    next_serial = (last_msg.get("serial_number", 0) + 1) if last_msg else 1
-    
-    chat_msg = ChatMessage(
-        serial_number=next_serial,
-        chat_room=chat_room,
-        user_id=user.user_id,
-        content=content,
-        is_gif=message.get("is_gif", False),
-        voice_url=message.get("voice_url")
-    )
-    doc = chat_msg.model_dump()
-    doc["created_at"] = doc["created_at"].isoformat()
-    if message.get("voice_url"):
-        doc["voice_url"] = message["voice_url"]
-    await db.chat_messages.insert_one(doc)
-    
-    ws_user = await db.users.find_one(
-        {"user_id": user.user_id},
-        {"_id": 0, "display_name": 1, "username": 1, "profile_picture": 1, "id_number": 1, "badges": 1, "role": 1}
-    )
-    broadcast_data = {
-        "type": "chat_message",
-        "message_id": doc["message_id"],
-        "serial_number": next_serial,
-        "chat_room": chat_room,
-        "user_id": user.user_id,
-        "content": content,
-        "created_at": doc["created_at"],
-        "is_gif": doc.get("is_gif", False),
-        "voice_url": doc.get("voice_url"),
-        "reactions": {},
-        "user": ws_user
-    }
-    # Broadcast to all connected room members in real-time
-    await manager.broadcast_to_room(broadcast_data, chat_room)
-    return broadcast_data
 
 # Spam detection - rate limiting per user
 spam_tracker = {}
