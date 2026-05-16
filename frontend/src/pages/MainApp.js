@@ -57,11 +57,21 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const searchTimeoutRef = useRef(null);
 
   useEffect(() => {
-    loadFeed();
-    loadDMConversations();
-    loadChatRooms();
     requestNotificationPermission();
-    connectWebSocket();
+
+    // Start polling immediately so UI works before WS connects
+    startPollingFallbacks();
+
+    // Load data — this wakes Render if it's sleeping
+    const init = async () => {
+      try {
+        await Promise.all([loadFeed(), loadDMConversations(), loadChatRooms()]);
+      } catch {}
+      // Server is now awake — safe to connect WebSocket
+      connectWebSocket();
+    };
+    init();
+
     return () => {
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
@@ -896,13 +906,13 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                 <div className="flex items-center justify-between mb-3 pb-2" style={{ borderBottom: '1px solid var(--border)' }}>
                   <h3 className="font-bold text-sm" style={{ color: 'var(--text-1)' }}>{chatRooms.find(r => r.id === activeChatRoom)?.name || 'Chat'}</h3>
                   <div className="flex items-center gap-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                      {wsReady ? '● Live' : '● Connecting...'}
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                      {wsReady ? '● Live' : '● Polling (connecting...)'}
                     </span>
                     {!wsReady && (
                       <button onClick={manualReconnect} className="text-xs font-bold px-2 py-0.5 rounded-lg"
                         style={{ background: 'var(--blue)', color: '#fff' }}>
-                        Retry
+                        Retry now
                       </button>
                     )}
                   </div>
