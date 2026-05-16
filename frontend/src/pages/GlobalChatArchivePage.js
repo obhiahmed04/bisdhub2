@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
-import { ArrowLeft, Archive, ChevronRight } from '@phosphor-icons/react';
+import { ArrowLeft, Archive, CaretRight } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import api, { resolveAssetUrl } from '../utils/api';
 
@@ -140,7 +140,7 @@ const GlobalChatArchivePage = ({ user }) => {
                     {a.message_count} messages · #{a.chat_room}
                   </p>
                 </div>
-                <ChevronRight size={16} style={{ color: 'var(--text-3)' }} />
+                <CaretRight size={16} style={{ color: 'var(--text-3)' }} />
               </button>
             ))}
           </div>
