@@ -396,22 +396,32 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     wsRef.current.send(JSON.stringify({ type: 'chat_message', chat_room: activeChatRoom, content: '🎤 Voice message', voice_url: voiceUrl }));
   };
 
-  const sendVoiceDM = (voiceUrl) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !activeDM) return;
-    wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content: '🎤 Voice message', voice_url: voiceUrl }));
+  const sendVoiceDM = async (voiceUrl) => {
+    if (!activeDM) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content: '🎤 Voice message', voice_url: voiceUrl }));
+    } else {
+      // REST fallback when WS is not connected
+      try {
+        await api.post(`/dm/${activeDM}/send`, { content: '🎤 Voice message', voice_url: voiceUrl });
+        loadDMMessages();
+      } catch { toast.error('Failed to send voice message'); }
+    }
   };
 
-  const sendCallLog = async (message) => {
+  const sendCallLog = async (action, duration = 0) => {
     if (!activeDM) return;
     try {
-      await api.post(`/dm/${activeDM}/send`, { content: message });
+      // Encode as JSON so the renderer can display a styled embed
+      const payload = JSON.stringify({ __callLog: true, action, duration });
+      await api.post(`/dm/${activeDM}/send`, { content: payload });
       loadDMMessages();
     } catch {}
   };
 
   const startCall = (callType) => {
     if (!activeDM || !activeDMUser) return;
-    sendCallLog(`📞 ${callType === 'video' ? 'Video' : 'Audio'} call started`);
+    sendCallLog('started');
     setActiveCall({ targetUser: activeDMUser, callType, isIncoming: false });
   };
 
@@ -686,7 +696,13 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <Copy size={18} weight="bold" />
                           <span className="hidden sm:inline">Share</span>
                         </button>
-                        <PostOptionsMenu post={post} currentUser={user} canDelete={post.user_id === user.user_id || user.is_admin || user.is_moderator} onDelete={() => deletePost(post.post_id)} onViewLikers={() => setViewLikersPost(post)} />
+                        <PostOptionsMenu
+                          post={post}
+                          currentUser={user}
+                          canDelete={post.user_id === user.user_id || user.is_admin || user.is_moderator}
+                          onDelete={() => deletePost(post.post_id)}
+                          onViewLikers={post.user_id === user.user_id ? () => setViewLikersPost(post) : null}
+                        />
                       </div>
                       
                       {/* Repost indicator */}
@@ -1007,6 +1023,33 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                     <div className="space-y-3">
                       {dmMessages.map((msg) => (
                         <div key={msg.dm_id} className={`flex ${msg.sender_id === user.user_id ? 'justify-end' : 'justify-start'}`}>
+                          {/* Check if message is a call log embed */}
+                          {(() => {
+                            let callLog = null;
+                            try { const p = JSON.parse(msg.content); if (p.__callLog) callLog = p; } catch {}
+                            if (callLog) {
+                              const fmt = (s) => s > 0 ? ` (${Math.floor(s/60)}:${String(s%60).padStart(2,'0')})` : '';
+                              const isOut = msg.sender_id === user.user_id;
+                              const cfg = callLog.action === 'started'
+                                ? { icon: '📞', label: 'Audio call started', color: '#16a34a', bg: 'rgba(22,163,74,0.1)' }
+                                : callLog.action === 'ended'
+                                ? { icon: '📞', label: `Call ended${fmt(callLog.duration)}`, color: '#2563EB', bg: 'rgba(37,99,235,0.1)' }
+                                : { icon: '📵', label: 'Missed call', color: '#FF6B6B', bg: 'rgba(255,107,107,0.1)' };
+                              return (
+                                <div className="flex justify-center w-full">
+                                  <div className="flex items-center gap-2 px-4 py-2 rounded-2xl text-xs font-bold border max-w-[85%]"
+                                    style={{ background: cfg.bg, borderColor: cfg.color + '40', color: cfg.color }}>
+                                    <span className="text-base">{cfg.icon}</span>
+                                    {cfg.label}
+                                    <span className="text-[10px] font-normal ml-1" style={{ color: 'var(--text-3)' }}>
+                                      {formatChatTime(msg.created_at)}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })() || (
                           <div className={`max-w-[75%] ${
                             msg.sender_id === user.user_id
                               ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
@@ -1025,6 +1068,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                               {formatChatTime(msg.created_at)}
                             </p>
                           </div>
+                          )}
                         </div>
                       ))}
                       <div ref={chatEndRef} />
@@ -1080,7 +1124,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
           targetUser={activeCall.targetUser}
           callType={activeCall.callType}
           isIncoming={false}
-          onEnd={(duration) => { if (duration > 0) sendCallLog(`📞 Call ended (${Math.floor(duration/60)}:${String(duration%60).padStart(2,'0')})`); setActiveCall(null); }}
+          onEnd={(duration) => { sendCallLog(duration > 0 ? 'ended' : 'missed', duration); setActiveCall(null); }}
         />
       )}
 
@@ -1093,7 +1137,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
           callType={incomingCall.call_type}
           isIncoming={true}
           incomingOffer={incomingCall.sdp}
-          onEnd={(duration) => { if (duration === 0) sendCallLog('📵 Missed call'); else sendCallLog(`📞 Call ended (${Math.floor(duration/60)}:${String(duration%60).padStart(2,'0')})`); setIncomingCall(null); }}
+          onEnd={(duration) => { sendCallLog(duration > 0 ? 'ended' : 'missed', duration); setIncomingCall(null); }}
         />
       )}
     </div>
