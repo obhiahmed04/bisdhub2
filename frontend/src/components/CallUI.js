@@ -1,14 +1,21 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Phone, PhoneDisconnect, VideoCamera, Microphone, MicrophoneSlash, VideoCameraSlash } from '@phosphor-icons/react';
 
+// ICE config with STUN + TURN relay (needed for users on different networks)
+// TURN credential: open relay public server — replace with your own for production
+const TURN_CREDENTIAL = 'openrelayproject';
 const ICE_SERVERS = {
   iceServers: [
+    // STUN (works on same network or simple NAT)
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
+    // TURN relay (works across all networks including symmetric NAT)
+    { urls: 'turn:openrelay.metered.ca:80',       username: TURN_CREDENTIAL, credential: TURN_CREDENTIAL },
+    { urls: 'turn:openrelay.metered.ca:443',      username: TURN_CREDENTIAL, credential: TURN_CREDENTIAL },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: TURN_CREDENTIAL, credential: TURN_CREDENTIAL },
+    { urls: 'turns:openrelay.metered.ca:443',     username: TURN_CREDENTIAL, credential: TURN_CREDENTIAL },
   ],
+  iceTransportPolicy: 'all',   // try STUN first, fall back to TURN automatically
 };
 
 // Get current live WebSocket from the ref passed by MainApp

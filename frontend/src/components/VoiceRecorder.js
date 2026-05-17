@@ -30,7 +30,8 @@ const VoiceRecorder = ({ onSend, compact = false }) => {
       chunksRef.current = [];
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
+        const baseMime = (mimeType || 'audio/webm').split(';')[0]; // strip ;codecs=... params
+      const blob = new Blob(chunksRef.current, { type: baseMime });
         setAudioBlob(blob);
         setAudioUrl(URL.createObjectURL(blob));
         stream.getTracks().forEach(t => t.stop());
@@ -66,7 +67,7 @@ const VoiceRecorder = ({ onSend, compact = false }) => {
     if (!audioBlob) return;
     setUploading(true);
     try {
-      const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+      const ext = baseMime.includes('mp4') ? 'mp4' : baseMime.includes('ogg') ? 'ogg' : 'webm';
       const formData = new FormData();
       formData.append('file', audioBlob, `voice.${ext}`);
       const res = await api.post('/upload', formData);  // NO Content-Type header — let axios set it with boundary
