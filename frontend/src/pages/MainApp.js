@@ -399,11 +399,19 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const sendVoiceDM = async (voiceUrl) => {
     if (!activeDM) return;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content: '🎤 Voice message', voice_url: voiceUrl }));
+      wsRef.current.send(JSON.stringify({
+        type: 'dm', receiver_id: activeDM,
+        content: '🎤 Voice message',
+        voice_url: voiceUrl,
+        message_type: 'text'
+      }));
     } else {
-      // REST fallback when WS is not connected
       try {
-        await api.post(`/dm/${activeDM}/send`, { content: '🎤 Voice message', voice_url: voiceUrl });
+        await api.post(`/dm/${activeDM}/send`, {
+          content: '🎤 Voice message',
+          voice_url: voiceUrl,
+          message_type: 'text'
+        });
         loadDMMessages();
       } catch { toast.error('Failed to send voice message'); }
     }
@@ -411,10 +419,15 @@ const MainApp = ({ user, onLogout, updateUser }) => {
 
   const sendCallLog = async (action, duration = 0) => {
     if (!activeDM) return;
+    // Store action and duration cleanly — message_type field controls rendering
+    const content = action === 'started' ? 'call_started'
+                  : action === 'ended'   ? `call_ended:${duration}`
+                  : 'call_missed';
     try {
-      // Encode as JSON so the renderer can display a styled embed
-      const payload = JSON.stringify({ __callLog: true, action, duration });
-      await api.post(`/dm/${activeDM}/send`, { content: payload });
+      await api.post(`/dm/${activeDM}/send`, {
+        content,
+        message_type: 'call_log'
+      });
       loadDMMessages();
     } catch {}
   };
@@ -1023,33 +1036,32 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                     <div className="space-y-3">
                       {dmMessages.map((msg) => (
                         <div key={msg.dm_id} className={`flex ${msg.sender_id === user.user_id ? 'justify-end' : 'justify-start'}`}>
-                          {/* Check if message is a call log embed */}
-                          {(() => {
-                            let callLog = null;
-                            try { const p = JSON.parse(msg.content); if (p.__callLog) callLog = p; } catch {}
-                            if (callLog) {
-                              const fmt = (s) => s > 0 ? ` (${Math.floor(s/60)}:${String(s%60).padStart(2,'0')})` : '';
-                              const isOut = msg.sender_id === user.user_id;
-                              const cfg = callLog.action === 'started'
-                                ? { icon: '📞', label: 'Audio call started', color: '#16a34a', bg: 'rgba(22,163,74,0.1)' }
-                                : callLog.action === 'ended'
-                                ? { icon: '📞', label: `Call ended${fmt(callLog.duration)}`, color: '#2563EB', bg: 'rgba(37,99,235,0.1)' }
-                                : { icon: '📵', label: 'Missed call', color: '#FF6B6B', bg: 'rgba(255,107,107,0.1)' };
+                          {msg.message_type === 'call_log' ? (
+                            /* ── Call log embed ── */
+                            (() => {
+                              const c = msg.content || '';
+                              let icon, label, color, bg;
+                              if (c === 'call_started') {
+                                icon = '📞'; label = 'Audio call started'; color = '#16a34a'; bg = 'rgba(22,163,74,0.08)';
+                              } else if (c.startsWith('call_ended:')) {
+                                const secs = parseInt(c.split(':')[1]) || 0;
+                                const dur = secs > 0 ? ` · ${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}` : '';
+                                icon = '📞'; label = `Call ended${dur}`; color = '#2563EB'; bg = 'rgba(37,99,235,0.08)';
+                              } else {
+                                icon = '📵'; label = 'Missed call'; color = '#FF6B6B'; bg = 'rgba(255,107,107,0.08)';
+                              }
                               return (
-                                <div className="flex justify-center w-full">
-                                  <div className="flex items-center gap-2 px-4 py-2 rounded-2xl text-xs font-bold border max-w-[85%]"
-                                    style={{ background: cfg.bg, borderColor: cfg.color + '40', color: cfg.color }}>
-                                    <span className="text-base">{cfg.icon}</span>
-                                    {cfg.label}
-                                    <span className="text-[10px] font-normal ml-1" style={{ color: 'var(--text-3)' }}>
-                                      {formatChatTime(msg.created_at)}
-                                    </span>
+                                <div className="flex justify-center w-full my-1">
+                                  <div className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold border"
+                                    style={{ background: bg, borderColor: color + '30', color }}>
+                                    <span>{icon}</span>
+                                    <span>{label}</span>
+                                    <span className="opacity-50 font-normal text-[10px]">{formatChatTime(msg.created_at)}</span>
                                   </div>
                                 </div>
                               );
-                            }
-                            return null;
-                          })() || (
+                            })()
+                          ) : (
                           <div className={`max-w-[75%] ${
                             msg.sender_id === user.user_id
                               ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
