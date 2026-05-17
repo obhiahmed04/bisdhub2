@@ -347,10 +347,21 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const repostPost = async (postId) => {
     try {
       await api.post(`/posts/${postId}/repost`);
-      toast.success('Post reposted!');
+      toast.success('Reposted! View in your profile → Reposts tab.');
       loadFeed();
     } catch (error) {
-      toast.error('Failed to repost');
+      const msg = error.response?.data?.detail || 'Failed to repost';
+      toast.error(msg);
+    }
+  };
+
+  const unrepostPost = async (postId) => {
+    try {
+      await api.delete(`/posts/${postId}/repost`);
+      toast.success('Repost removed');
+      loadFeed();
+    } catch (error) {
+      toast.error('Failed to remove repost');
     }
   };
 
@@ -390,8 +401,17 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content: '🎤 Voice message', voice_url: voiceUrl }));
   };
 
+  const sendCallLog = async (message) => {
+    if (!activeDM) return;
+    try {
+      await api.post(`/dm/${activeDM}/send`, { content: message });
+      loadDMMessages();
+    } catch {}
+  };
+
   const startCall = (callType) => {
     if (!activeDM || !activeDMUser) return;
+    sendCallLog(`📞 ${callType === 'video' ? 'Video' : 'Audio'} call started`);
     setActiveCall({ targetUser: activeDMUser, callType, isIncoming: false });
   };
 
@@ -648,11 +668,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <Heart size={18} weight={post.likes?.includes(user.user_id) ? 'fill' : 'bold'} />
                           {post.likes?.length || 0}
                         </button>
-                        {post.user_id === user.user_id && post.likes?.length > 0 && (
-                          <button onClick={() => setViewLikersPost(post)} className="text-[10px] hover:underline" style={{ color: 'var(--text-3)' }}>
-                            See who liked
-                          </button>
-                        )}
+
                         <button onClick={() => setExpandedComments({...expandedComments, [post.post_id]: !expandedComments[post.post_id]})}
                           className="flex items-center gap-1.5 text-[#4B4B4B] hover:text-[#2563EB] font-medium">
                           <ChatCircle size={18} weight="bold" />
@@ -670,7 +686,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                           <Copy size={18} weight="bold" />
                           <span className="hidden sm:inline">Share</span>
                         </button>
-                        <PostOptionsMenu post={post} canDelete={post.user_id === user.user_id || user.is_admin || user.is_moderator} onDelete={() => deletePost(post.post_id)} />
+                        <PostOptionsMenu post={post} currentUser={user} canDelete={post.user_id === user.user_id || user.is_admin || user.is_moderator} onDelete={() => deletePost(post.post_id)} onViewLikers={() => setViewLikersPost(post)} />
                       </div>
                       
                       {/* Repost indicator */}
@@ -793,6 +809,9 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                   <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${wsReady ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
                     {wsReady ? '● Live' : '● Polling (WS reconnecting)'}
                   </span>
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 hidden sm:inline">
+                    🔄 Resets 1 AM & 1 PM ({(() => { const n=new Date(); const utc3=new Date(n.getTime()+3*3600000); const h=utc3.getUTCHours(); const next1=h<1?1:h<13?13:25; const diffH=next1-h; return diffH<=0?'<1h':`~${diffH}h`; })()})
+                  </span>
                 </div>
                 <ScrollArea className="flex-1 mb-3">
                   <div className="space-y-3">
@@ -810,7 +829,23 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                             </div>
                           )}
                           {msg.user_id !== user.user_id && (
-                            <p className="text-[10px] font-bold opacity-70 mb-0.5">{getPublicName(msg.user)}</p>
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <img
+                                src={resolveAssetUrl(msg.user?.profile_picture) || ''}
+                                alt=""
+                                className="w-5 h-5 rounded-full object-cover flex-shrink-0 border"
+                                style={{ borderColor: 'var(--border-c)' }}
+                                onError={e => { e.target.style.display='none'; }}
+                              />
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-black" style={{ color: 'var(--text-1)', lineHeight: 1.2 }}>
+                                  {msg.user?.full_name || msg.user?.display_name || 'User'}
+                                </span>
+                                <span className="text-[9px]" style={{ color: 'var(--blue)', lineHeight: 1.2 }}>
+                                  {msg.user?.username ? `@${msg.user.username}` : ''}{msg.user?.id_number ? ` · ${msg.user.id_number}` : ''}
+                                </span>
+                              </div>
+                            </div>
                           )}
                           <p className="text-sm">{msg.content}</p>
                           {msg.voice_url && <VoicePlayer src={msg.voice_url} dark={msg.sender_id === user.user_id} />}
@@ -1045,7 +1080,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
           targetUser={activeCall.targetUser}
           callType={activeCall.callType}
           isIncoming={false}
-          onEnd={() => setActiveCall(null)}
+          onEnd={(duration) => { if (duration > 0) sendCallLog(`📞 Call ended (${Math.floor(duration/60)}:${String(duration%60).padStart(2,'0')})`); setActiveCall(null); }}
         />
       )}
 
@@ -1058,7 +1093,7 @@ const MainApp = ({ user, onLogout, updateUser }) => {
           callType={incomingCall.call_type}
           isIncoming={true}
           incomingOffer={incomingCall.sdp}
-          onEnd={() => setIncomingCall(null)}
+          onEnd={(duration) => { if (duration === 0) sendCallLog('📵 Missed call'); else sendCallLog(`📞 Call ended (${Math.floor(duration/60)}:${String(duration%60).padStart(2,'0')})`); setIncomingCall(null); }}
         />
       )}
     </div>
