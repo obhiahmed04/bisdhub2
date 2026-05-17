@@ -406,7 +406,9 @@ class DirectMessage(BaseModel):
     content: str
     images: List[str] = Field(default_factory=list)
     is_gif: bool = False
+    voice_url: Optional[str] = None
     reply_to: Optional[str] = None
+    message_type: str = "text"   # text | call_log | system
     read: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -1752,7 +1754,9 @@ async def send_dm(receiver_id: str, message: dict, user: User = Depends(get_curr
         receiver_id=receiver_id,
         content=message.get('content', ''),
         images=message.get('images', []),
-        is_gif=message.get('is_gif', False)
+        is_gif=message.get('is_gif', False),
+        voice_url=message.get('voice_url'),
+        message_type=message.get('message_type', 'text'),
     )
     
     doc = dm.model_dump()
@@ -2238,7 +2242,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         "sdp": data['sdp']
                     }, target_id)
                 else:
-                    await manager.send_personal_message({"type": "call_unavailable", "target_id": target_id}, user_id)
+                    # Check if user exists at all
+                    target_exists = await db.users.find_one({"user_id": target_id}, {"_id": 0, "user_id": 1})
+                    reason = "offline" if not target_exists else "not_connected"
+                    await manager.send_personal_message({
+                        "type": "call_unavailable",
+                        "target_id": target_id,
+                        "reason": reason
+                    }, user_id)
             
             elif data['type'] == 'call_answer':
                 target_id = data['target_id']
@@ -2834,6 +2845,45 @@ async def trigger_archive_now(user: User = Depends(verify_moderator)):
     """Manually trigger chat archive (mods only)"""
     await archive_global_chat()
     return {"status": "success", "message": "Chat archived"}
+
+
+# ICE/TURN configuration for WebRTC calls
+@api_router.get("/call/ice-config")
+async def get_ice_config(user: User = Depends(get_current_user)):
+    """Returns ICE server list. Set METERED_API_KEY env var for reliable TURN."""
+    servers = [
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun1.l.google.com:19302"},
+        {"urls": "stun:stun2.l.google.com:19302"},
+        {"urls": "stun:stun3.l.google.com:19302"},
+    ]
+    
+    # If Metered.ca API key is set — fetch fresh ephemeral TURN credentials
+    metered_key = os.environ.get("METERED_API_KEY", "")
+    if metered_key:
+        try:
+            import httpx
+            url = f"https://bisdhub.metered.live/api/v1/turn/credentials?apiKey={metered_key}"
+            r = httpx.get(url, timeout=5)
+            if r.status_code == 200:
+                metered_servers = r.json()
+                servers.extend(metered_servers)
+                logger.info(f"Loaded {len(metered_servers)} TURN servers from Metered")
+        except Exception as e:
+            logger.warning(f"Could not fetch Metered TURN credentials: {e}")
+    
+    # Always add free public TURN fallbacks
+    servers.extend([
+        # freestun.net — free public TURN server
+        {"urls": "turn:freestun.net:3478",  "username": "free", "credential": "free"},
+        {"urls": "turns:freestun.net:5349", "username": "free", "credential": "free"},
+        # Open relay fallbacks
+        {"urls": "turn:openrelay.metered.ca:80",  "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "turn:openrelay.metered.ca:443", "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": "turn:openrelay.metered.ca:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
+    ])
+    
+    return {"ice_servers": servers, "has_metered": bool(metered_key)}
 
 # Spam detection - rate limiting per user
 spam_tracker = {}
