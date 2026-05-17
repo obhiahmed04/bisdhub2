@@ -2276,9 +2276,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # File Upload endpoint
 @api_router.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: User = Depends(get_current_user)):
-    allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/quicktime', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav']
-    if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")
+    allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/quicktime',
+                     'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav',
+                     'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/ogg;codecs=vorbis']
+    # Normalise: strip codec params for the check (e.g. audio/webm;codecs=opus → audio/webm)
+    base_type = (file.content_type or '').split(';')[0].strip()
+    if base_type not in allowed_types and file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"File type '{file.content_type}' not allowed. Allowed: images, video/mp4, audio files")
     
     max_size = 10 * 1024 * 1024  # 10MB
     content = await file.read()
