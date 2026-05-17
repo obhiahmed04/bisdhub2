@@ -36,8 +36,10 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
   const localStreamRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteAudioRef = useRef(null);  // always present for audio calls
   const timerRef = useRef(null);
   const endedRef = useRef(false);
+  const callStartTime = useRef(null);
   // ICE candidates that arrive before setRemoteDescription — buffer them
   const iceBufRef = useRef([]);
   const remoteSetRef = useRef(false);
@@ -55,8 +57,9 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
     if (endedRef.current) return;
     endedRef.current = true;
     wsSend(wsRef, { type: 'call_end', target_id: targetUser.user_id });
+    const dur = Math.floor((Date.now() - (callStartTime.current || Date.now())) / 1000);
     cleanup();
-    onEnd();
+    onEnd(dur);
   }, [wsRef, targetUser, cleanup, onEnd]);
 
   // Add buffered ICE candidates after remote description is set
@@ -102,13 +105,22 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
     };
 
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current && e.streams[0]) remoteVideoRef.current.srcObject = e.streams[0];
+      if (!e.streams[0]) return;
+      // For video calls, use video element; for audio calls, use the hidden audio element
+      if (isVideo && remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = e.streams[0];
+      }
+      // ALWAYS pipe audio to the hidden audio element (works for both audio and video calls)
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = e.streams[0];
+      }
     };
 
     pc.onconnectionstatechange = () => {
       console.log('[BISD Call] connectionState:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         setStatus('connected');
+        callStartTime.current = Date.now();
         timerRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
       }
       if (pc.connectionState === 'failed') {
@@ -200,9 +212,14 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
         }
       }
 
-      if (data.type === 'call_end' || data.type === 'call_reject') {
+      if (data.type === 'call_end') {
+        const dur = Math.floor((Date.now() - (callStartTime.current || Date.now())) / 1000);
         cleanup();
-        onEnd();
+        onEnd(dur);
+      }
+      if (data.type === 'call_reject') {
+        cleanup();
+        onEnd(0);
       }
     };
 
@@ -233,7 +250,7 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
     endedRef.current = true;
     wsSend(wsRef, { type: 'call_reject', target_id: targetUser.user_id });
     cleanup();
-    onEnd();
+    onEnd(0);  // 0 = rejected/missed
   };
 
   const toggleMute = () => {
@@ -279,6 +296,8 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
           {error && <div className="mt-3 px-3 py-2 bg-red-900/50 rounded-lg text-xs text-red-300 text-left">{error}</div>}
         </div>
 
+        {/* Hidden audio element - plays remote audio for ALL call types */}
+        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
         <div className="flex items-center justify-center gap-4 p-6 pt-0">
           {status === 'ringing' ? (
             <>

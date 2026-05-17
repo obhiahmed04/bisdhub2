@@ -69,7 +69,7 @@ const VoiceRecorder = ({ onSend, compact = false }) => {
       const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
       const formData = new FormData();
       formData.append('file', audioBlob, `voice.${ext}`);
-      const res = await api.post('/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await api.post('/upload', formData);  // NO Content-Type header — let axios set it with boundary
       onSend(res.data.url);
       discard();
     } catch {
