@@ -5,10 +5,12 @@ import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { toast } from 'sonner';
-import { ArrowLeft, Heart, ChatCircle, UserPlus, UserMinus, Lock, UsersThree, PaperPlaneTilt, ChatTeardropDots } from '@phosphor-icons/react';
+import { ArrowLeft, Heart, ChatCircle, UserPlus, UserMinus, Lock, UsersThree, PaperPlaneTilt, ChatTeardropDots, ArrowsClockwise, Copy } from '@phosphor-icons/react';
 import api, { getPublicName, getSecondaryIdentity, resolveAssetUrl } from '../utils/api';
 import EditProfileDialog from '../components/EditProfileDialog';
 import CommentSection from '../components/CommentSection';
+import PostOptionsMenu from '../components/PostOptionsMenu';
+import { VoicePlayer } from '../components/VoiceRecorder';
 import ReportDialog from '../components/ReportDialog';
 
 const UserProfile = ({ currentUser, onLogout, updateUser }) => {
@@ -434,40 +436,95 @@ const UserProfile = ({ currentUser, onLogout, updateUser }) => {
             </div>
             <div className="space-y-4">
               {posts.filter(post => profileTab === 'reposts' ? !!post.repost_of : !post.repost_of).map(post => (
-                <div key={post.post_id} className="rounded-2xl border p-4"
+                <div key={post.post_id} data-testid={`profile-post-${post.post_id}`}
+                  className="rounded-xl p-4 border"
                   style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
-                  {post.serial_number && <p className="text-[10px] mb-1 font-mono" style={{ color: 'var(--text-3)' }}>#{post.serial_number}</p>}
-                <p className="text-xs font-bold mb-2" style={{ color: 'var(--blue)' }}>@{profileUser.username || profileUser.id_number}</p>
-                  <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: 'var(--text-1)' }}>{post.content}</p>
+                  {/* Header: avatar + name + meta */}
+                  <div className="flex items-start gap-3 mb-3">
+                    <Avatar className="border-2 border-[#111111] w-10 h-10">
+                      <AvatarImage src={resolveAssetUrl(profileUser?.profile_picture)} />
+                      <AvatarFallback>{getPublicName(profileUser)?.[1] || 'U'}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-bold text-sm">
+                          {profileUser?.username ? `@${profileUser.username}` : profileUser?.display_name || profileUser?.id_number || 'User'}
+                        </span>
+                        <span className="text-xs" style={{ color: 'var(--text-3)' }}>
+                          {profileUser?.username ? (profileUser?.display_name || '') : ''}
+                        </span>
+                        {profileUser?.badges?.filter(b => b !== "Superior").map((badge, i) => (
+                          <span key={i} className="px-1.5 py-0.5 rounded-full text-[10px] font-bold border border-[#111111] bg-[#FF6B6B] text-white">
+                            {badge}
+                          </span>
+                        ))}
+                        {post.visibility === 'official' && (
+                          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold border border-[#111111] bg-[#2563EB] text-white">Official</span>
+                        )}
+                      </div>
+                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                        {post.serial_number && <span className="font-mono mr-2">#{post.serial_number}</span>}
+                        {new Date(post.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Content */}
+                  <p className="text-sm mb-3 break-words whitespace-pre-wrap" style={{ color: 'var(--text-1)' }}>{post.content}</p>
+
+                  {/* Voice note */}
+                  {post.voice_url && (
+                    <div className="mb-3 bg-[#F5F5F5] border-2 border-[#111111] rounded-xl px-3 py-2">
+                      <VoicePlayer src={resolveAssetUrl(post.voice_url)} dark={false} />
+                    </div>
+                  )}
+
+                  {/* Images */}
                   {post.images?.length > 0 && (
                     <div className={`grid gap-2 mb-3 ${post.images.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
                       {post.images.map((img, i) => (
-                        <img key={i} src={img} alt="" className="w-full rounded-xl object-cover max-h-64"
-                          style={{ border: '1px solid var(--border-c)' }} />
+                        <img key={i} src={resolveAssetUrl(img)} alt="" className="w-full rounded-lg border-2 border-[#111111] object-cover max-h-64" />
                       ))}
                     </div>
                   )}
-                  <div className="flex gap-4 text-sm">
+
+                  {/* Actions */}
+                  <div className="flex flex-wrap gap-4 text-sm">
                     <button onClick={() => likePost(post.post_id, post.likes?.includes(currentUser?.user_id))}
                       className="flex items-center gap-1.5 font-medium"
                       style={{ color: post.likes?.includes(currentUser?.user_id) ? '#FF6B6B' : 'var(--text-3)' }}>
                       <Heart size={18} weight={post.likes?.includes(currentUser?.user_id) ? 'fill' : 'bold'} />
                       {post.likes?.length || 0}
                     </button>
-                    {isOwnProfile && (post.likes?.length > 0) && (
-                      <button onClick={() => setLikerPostId(post.post_id)}
-                        className="text-[10px] hover:underline" style={{ color: 'var(--text-3)' }}>
-                        See who liked
-                      </button>
-                    )}
                     <button onClick={() => setExpandedComments(p => ({ ...p, [post.post_id]: !p[post.post_id] }))}
                       className="flex items-center gap-1.5 font-medium"
                       style={{ color: 'var(--text-3)' }}>
                       <ChatCircle size={18} weight="bold" />
                       {post.comments?.length || 0}
                     </button>
-                    {post.user_id !== currentUser?.user_id && <ReportDialog postId={post.post_id} onReported={loadAll} />}
+                    {post.repost_of && (
+                      <span className="flex items-center gap-1 text-[10px] font-bold" style={{ color: '#16a34a' }}>
+                        <ArrowsClockwise size={12} weight="bold" />
+                        Repost
+                      </span>
+                    )}
+                    <PostOptionsMenu
+                      post={post}
+                      currentUser={currentUser}
+                      canDelete={post.user_id === currentUser?.user_id || currentUser?.is_admin || currentUser?.is_moderator}
+                      onDelete={() => { /* TODO: delete from profile */ loadAll(); }}
+                      onViewLikers={isOwnProfile ? () => setLikerPostId(post.post_id) : null}
+                    />
                   </div>
+
+                  {/* Repost indicator */}
+                  {post.repost_of && post.repost_original_username && (
+                    <p className="text-[10px] mt-1 flex items-center gap-1 font-semibold" style={{ color: 'var(--text-3)' }}>
+                      <ArrowsClockwise size={10} weight="bold" />
+                      Reposted from <span style={{ color: 'var(--blue)' }}>@{post.repost_original_username}</span>
+                    </p>
+                  )}
+
                   {expandedComments[post.post_id] && <CommentSection post={post} user={currentUser} />}
                 </div>
               ))}

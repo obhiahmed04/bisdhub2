@@ -11,8 +11,7 @@ import {
   SignOut, Heart, ChatCircle, PaperPlaneRight, Flag, ShieldCheck, Crown,
   Moon, Sun, GearSix, ShareNetwork, ArrowsClockwise, UserPlus, Copy,
   UsersThree, ArrowBendUpLeft, Smiley, WarningCircle, Trash,
-  Phone, VideoCamera, Image
-} from '@phosphor-icons/react';
+  Phone, VideoCamera, Image, CaretLeft, ArrowBendUpLeft } from '@phosphor-icons/react';
 import api, { API_BASE, WS_BASE, getPublicName, getSecondaryIdentity, resolveAssetUrl } from '../utils/api';
 import NotificationBell from '../components/NotificationBell';
 import CreatePostDialog from '../components/CreatePostDialog';
@@ -37,6 +36,14 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const [activeDM, setActiveDM] = useState(null);
   const [activeDMUser, setActiveDMUser] = useState(null);
   const [dmMessages, setDmMessages] = useState([]);
+  const activeDMRef = useRef(null);
+  const [typingUser, setTypingUser] = useState(null);
+  const [replyTo, setReplyTo] = useState(null);
+  const [editingDM, setEditingDM] = useState(null);
+  const [editContent, setEditContent] = useState('');
+  const [showHistory, setShowHistory] = useState(null);
+  const [reactionPickerFor, setReactionPickerFor] = useState(null);
+  const typingSentAtRef = useRef(0);
   const [newDMMessage, setNewDMMessage] = useState('');
   const [ws, setWs] = useState(null);
   const [wsReady, setWsReady] = useState(false);
@@ -87,6 +94,10 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   }, [activeChatRoom]);
 
   useEffect(() => {
+    activeDMRef.current = activeDM;
+    setReplyTo(null);
+    setEditingDM(null);
+    setTypingUser(null);
     if (activeDM) loadDMMessages();
   }, [activeDM]);
 
@@ -136,11 +147,68 @@ const MainApp = ({ user, onLogout, updateUser }) => {
         });
       }
       if (data.type === 'dm') {
-        setDmMessages(prev => {
-          if (prev.some(m => m.dm_id === data.dm_id)) return prev;
-          return [...prev, data];
-        });
+        // CRITICAL: only add to the open conversation
+        // (otherwise messages from User C leak into User B's chat window)
+        const otherPartyId = data.sender_id === user.user_id ? data.receiver_id : data.sender_id;
+        if (activeDMRef.current && otherPartyId === activeDMRef.current) {
+          setDmMessages(prev => {
+            // Match by dm_id, OR replace optimistic temp by sender+content+timestamp proximity
+            const idx = prev.findIndex(m =>
+              m.dm_id === data.dm_id ||
+              (m._pending && m.sender_id === data.sender_id &&
+               m.content === data.content &&
+               Math.abs(new Date(m.created_at) - new Date(data.created_at)) < 30000)
+            );
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = { ...data, _status: 'sent' };
+              return copy;
+            }
+            return [...prev, { ...data, _status: 'sent' }];
+          });
+          // Auto-mark as read if I'm viewing this conversation
+          if (data.sender_id !== user.user_id) {
+            api.post(`/dm/${data.sender_id}/mark-read`).catch(() => {});
+          }
+        }
         loadDMConversations();
+      }
+      
+      // Real-time DM updates: edit, delete, react, read, typing
+      if (data.type === 'dm_edit') {
+        const otherPartyId = data.sender_id === user.user_id ? data.receiver_id : data.sender_id;
+        if (activeDMRef.current === otherPartyId) {
+          setDmMessages(prev => prev.map(m => m.dm_id === data.dm_id ? { ...m, ...data, _status: m._status } : m));
+        }
+      }
+      if (data.type === 'dm_delete') {
+        const otherPartyId = data.sender_id === user.user_id ? data.receiver_id : data.sender_id;
+        if (activeDMRef.current === otherPartyId) {
+          setDmMessages(prev => prev.map(m => m.dm_id === data.dm_id ? { ...m, deleted: true, content: '', images: [], voice_url: null } : m));
+        }
+      }
+      if (data.type === 'dm_react') {
+        const otherPartyId = data.sender_id === user.user_id ? data.receiver_id : data.sender_id;
+        if (activeDMRef.current === otherPartyId) {
+          setDmMessages(prev => prev.map(m => m.dm_id === data.dm_id ? { ...m, reactions: data.reactions } : m));
+        }
+      }
+      if (data.type === 'dm_read') {
+        // Other user read messages I sent them
+        if (activeDMRef.current === data.reader_id) {
+          setDmMessages(prev => prev.map(m =>
+            m.sender_id === user.user_id ? { ...m, read: true, _status: 'read' } : m
+          ));
+        }
+      }
+      if (data.type === 'dm_typing') {
+        if (activeDMRef.current === data.sender_id) {
+          setTypingUser(data.typing ? data.sender_id : null);
+          if (data.typing) {
+            clearTimeout(window._typingClearTimeout);
+            window._typingClearTimeout = setTimeout(() => setTypingUser(null), 4000);
+          }
+        }
       }
       if (data.type === 'reaction_update') {
         setChatMessages(prev => prev.map(m => m.message_id === data.message_id ? { ...m, reactions: data.reactions } : m));
@@ -269,30 +337,94 @@ const MainApp = ({ user, onLogout, updateUser }) => {
     }
   };
 
+  // ── DM Edit / Delete / React / Typing helpers ──
+  const startEditDM = (msg) => { setEditingDM(msg.dm_id); setEditContent(msg.content); };
+  const cancelEditDM = () => { setEditingDM(null); setEditContent(''); };
+  const submitEditDM = async () => {
+    const newContent = editContent.trim();
+    if (!newContent || !editingDM) return cancelEditDM();
+    try {
+      await api.put(`/dm/${editingDM}`, { content: newContent });
+      // optimistic local update (WS will confirm)
+      setDmMessages(prev => prev.map(m =>
+        m.dm_id === editingDM ? { ...m, content: newContent, edited: true } : m
+      ));
+    } catch { toast.error('Failed to edit message'); }
+    cancelEditDM();
+  };
+  const unsendDM = async (dm_id) => {
+    if (!window.confirm('Unsend this message? Recipients will see "message was deleted".')) return;
+    try {
+      await api.delete(`/dm/${dm_id}`);
+      setDmMessages(prev => prev.map(m =>
+        m.dm_id === dm_id ? { ...m, deleted: true, content: '', images: [], voice_url: null } : m
+      ));
+    } catch { toast.error('Failed to unsend'); }
+  };
+  const reactDM = async (dm_id, emoji) => {
+    setReactionPickerFor(null);
+    try {
+      const res = await api.post(`/dm/${dm_id}/react`, { emoji });
+      setDmMessages(prev => prev.map(m =>
+        m.dm_id === dm_id ? { ...m, reactions: res.data.reactions } : m
+      ));
+    } catch { toast.error('Failed to react'); }
+  };
+
+  // Send "typing" event over WS (rate-limited to once every 2.5s)
+  const sendTypingSignal = () => {
+    if (!activeDM || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - typingSentAtRef.current < 2500) return;
+    typingSentAtRef.current = now;
+    wsRef.current.send(JSON.stringify({ type: 'dm_typing', receiver_id: activeDM, typing: true }));
+  };
+
   const sendDMMessage = async () => {
     if ((!newDMMessage.trim() && dmAttachImages.length === 0) || !activeDM) return;
     const content = newDMMessage.trim() || '📎';
     const images = [...dmAttachImages];
+    const replyToId = replyTo?.dm_id || null;
     setNewDMMessage('');
     setDmAttachImages([]);
-    // Optimistic update
-    const tempId = `tmp_${Date.now()}`;
-    setDmMessages(prev => [...prev, { dm_id: tempId, sender_id: user.user_id, receiver_id: activeDM, content, images, created_at: new Date().toISOString(), _pending: true }]);
+    setReplyTo(null);
 
+    // Optimistic message — _status: 'sending'
+    const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const optimisticMsg = {
+      dm_id: tempId,
+      sender_id: user.user_id,
+      receiver_id: activeDM,
+      content,
+      images,
+      reply_to: replyToId,
+      reply_context: replyTo ? {
+        dm_id: replyTo.dm_id, sender_id: replyTo.sender_id,
+        content: (replyTo.content || '').slice(0, 120), deleted: replyTo.deleted
+      } : null,
+      created_at: new Date().toISOString(),
+      _pending: true,
+      _status: 'sending'
+    };
+    setDmMessages(prev => [...prev, optimisticMsg]);
+
+    // Try WebSocket first (real-time + cheap)
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'dm', receiver_id: activeDM, content, images }));
-      // Server echoes back real message; remove temp after short delay
-      setTimeout(() => setDmMessages(prev => prev.filter(m => m.dm_id !== tempId)), 3000);
-    } else {
-      try {
-        const res = await api.post(`/dm/${activeDM}/send`, { content, images });
-        setDmMessages(prev => prev.map(m => m.dm_id === tempId ? { ...res.data } : m));
-        loadDMConversations();
-      } catch {
-        toast.error('Failed to send message');
-        setDmMessages(prev => prev.filter(m => m.dm_id !== tempId));
-        setNewDMMessage(content);
-      }
+      wsRef.current.send(JSON.stringify({
+        type: 'dm', receiver_id: activeDM, content, images, reply_to: replyToId
+      }));
+      // The WS echo will replace the optimistic message (matched by content+sender within 30s)
+      return;
+    }
+
+    // REST fallback when WS down
+    try {
+      const res = await api.post(`/dm/${activeDM}/send`, { content, images, reply_to: replyToId });
+      setDmMessages(prev => prev.map(m => m.dm_id === tempId ? { ...res.data, _status: 'sent' } : m));
+      loadDMConversations();
+    } catch {
+      toast.error('Failed to send message');
+      setDmMessages(prev => prev.map(m => m.dm_id === tempId ? { ...m, _status: 'failed' } : m));
     }
   };
 
@@ -458,6 +590,17 @@ const MainApp = ({ user, onLogout, updateUser }) => {
   const formatChatTime = (dateStr) => {
     const d = new Date(dateStr);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatDayDivider = (dateStr) => {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diff = Math.floor((now - d) / 86400000); // days
+    if (d.toDateString() === now.toDateString()) return 'Today';
+    const yest = new Date(now); yest.setDate(yest.getDate() - 1);
+    if (d.toDateString() === yest.toDateString()) return 'Yesterday';
+    if (diff < 7) return d.toLocaleDateString([], { weekday: 'long' });
+    return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
   };
 
   return (
@@ -1033,59 +1176,213 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                   </div>
 
                   <ScrollArea className="flex-1 mb-3">
-                    <div className="space-y-3">
-                      {dmMessages.map((msg) => (
-                        <div key={msg.dm_id} className={`flex ${msg.sender_id === user.user_id ? 'justify-end' : 'justify-start'}`}>
-                          {msg.message_type === 'call_log' ? (
-                            /* ── Call log embed ── */
-                            (() => {
-                              const c = msg.content || '';
-                              let icon, label, color, bg;
-                              if (c === 'call_started') {
-                                icon = '📞'; label = 'Audio call started'; color = '#16a34a'; bg = 'rgba(22,163,74,0.08)';
-                              } else if (c.startsWith('call_ended:')) {
-                                const secs = parseInt(c.split(':')[1]) || 0;
-                                const dur = secs > 0 ? ` · ${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}` : '';
-                                icon = '📞'; label = `Call ended${dur}`; color = '#2563EB'; bg = 'rgba(37,99,235,0.08)';
-                              } else {
-                                icon = '📵'; label = 'Missed call'; color = '#FF6B6B'; bg = 'rgba(255,107,107,0.08)';
-                              }
-                              return (
-                                <div className="flex justify-center w-full my-1">
-                                  <div className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold border"
-                                    style={{ background: bg, borderColor: color + '30', color }}>
-                                    <span>{icon}</span>
-                                    <span>{label}</span>
-                                    <span className="opacity-50 font-normal text-[10px]">{formatChatTime(msg.created_at)}</span>
-                                  </div>
-                                </div>
-                              );
-                            })()
-                          ) : (
-                          <div className={`max-w-[75%] ${
-                            msg.sender_id === user.user_id
-                              ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm px-3 py-2'
-                              : 'rounded-2xl rounded-bl-sm px-3 py-2' } style={msg.sender_id !== user.user_id ? { background: 'var(--bg-surface)' } : {}
-                          }`}>
-                            <p className="text-sm">{msg.content}</p>
-                            {msg.images?.length > 0 && (
-                              <div className="mt-1.5">
-                                {msg.images.map((img, i) => (
-                                  <img key={i} src={resolveAssetUrl(img)} alt="" className="rounded-lg max-h-32 object-cover mt-1 border border-white/20" />
-                                ))}
+                    <div className="space-y-1.5 px-1">
+                      {dmMessages.map((msg, idx) => {
+                        // Date divider — shown when day changes
+                        const prevMsg = idx > 0 ? dmMessages[idx - 1] : null;
+                        const showDate = !prevMsg || (
+                          new Date(msg.created_at).toDateString() !== new Date(prevMsg.created_at).toDateString()
+                        );
+                        const isOwn = msg.sender_id === user.user_id;
+                        const isCallLog = msg.message_type === 'call_log';
+
+                        return (
+                          <React.Fragment key={msg.dm_id}>
+                            {showDate && (
+                              <div className="flex justify-center my-3">
+                                <span className="text-[10px] font-bold px-3 py-1 rounded-full border"
+                                  style={{ background: 'var(--bg-surface)', color: 'var(--text-3)', borderColor: 'var(--border-c)' }}>
+                                  {formatDayDivider(msg.created_at)}
+                                </span>
                               </div>
                             )}
-                            {msg.voice_url && <VoicePlayer src={msg.voice_url} dark={msg.sender_id === user.user_id} />}
-                            <p className={`text-[10px] mt-0.5 ${msg.sender_id === user.user_id ? 'text-white/60' : ''}`} style={{ color: msg.sender_id !== user.user_id ? 'var(--text-3)' : undefined }}>
-                              {formatChatTime(msg.created_at)}
-                            </p>
+
+                            {isCallLog ? (
+                              (() => {
+                                const c = msg.content || '';
+                                let icon, label, color, bg;
+                                if (c === 'call_started') { icon='📞'; label='Audio call started'; color='#16a34a'; bg='rgba(22,163,74,0.08)'; }
+                                else if (c.startsWith('call_ended:')) {
+                                  const secs = parseInt(c.split(':')[1]) || 0;
+                                  const dur = secs > 0 ? ` · ${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}` : '';
+                                  icon='📞'; label=`Call ended${dur}`; color='#2563EB'; bg='rgba(37,99,235,0.08)';
+                                } else { icon='📵'; label='Missed call'; color='#FF6B6B'; bg='rgba(255,107,107,0.08)'; }
+                                return (
+                                  <div className="flex justify-center w-full my-1">
+                                    <div className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold border"
+                                      style={{ background: bg, borderColor: color + '30', color }}>
+                                      <span>{icon}</span><span>{label}</span>
+                                      <span className="opacity-50 font-normal text-[10px]">{formatChatTime(msg.created_at)}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })()
+                            ) : msg.deleted ? (
+                              /* Deleted message tombstone */
+                              <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                <div className="max-w-[75%] px-3 py-2 rounded-2xl text-xs italic flex items-center gap-1.5"
+                                  style={{ background: 'var(--bg-surface)', color: 'var(--text-3)', border: '1px dashed var(--border-c)' }}>
+                                  <span>🚫</span>
+                                  <span>This message was deleted</span>
+                                  <span className="text-[9px] opacity-60 ml-1">{formatChatTime(msg.created_at)}</span>
+                                </div>
+                              </div>
+                            ) : (
+                              /* Regular message bubble */
+                              <div className={`group flex ${isOwn ? 'justify-end' : 'justify-start'} relative`}>
+                                <div className="flex flex-col" style={{ maxWidth: '78%' }}>
+                                  {/* Reply context preview */}
+                                  {msg.reply_context && (
+                                    <div className={`text-[10px] px-2 py-1 mb-0.5 rounded-lg border-l-2 ${isOwn ? 'self-end' : 'self-start'}`}
+                                      style={{ background: 'var(--bg-surface)', borderLeftColor: 'var(--blue)', color: 'var(--text-2)' }}>
+                                      <span className="font-bold" style={{ color: 'var(--blue)' }}>
+                                        {msg.reply_context.sender_id === user.user_id ? 'You' : (activeDMUser?.display_name || 'User')}:
+                                      </span>{' '}
+                                      <span className="italic">{msg.reply_context.deleted ? '(deleted message)' : msg.reply_context.content}</span>
+                                    </div>
+                                  )}
+
+                                  <div className={`relative ${
+                                    isOwn ? 'bg-[#2563EB] text-white rounded-2xl rounded-br-sm' : 'rounded-2xl rounded-bl-sm'
+                                  } px-3 py-2 break-words`}
+                                    style={!isOwn ? { background: 'var(--bg-surface)', color: 'var(--text-1)' } : {}}>
+
+                                    {/* Edit mode */}
+                                    {editingDM === msg.dm_id ? (
+                                      <div className="flex flex-col gap-1 min-w-[200px]">
+                                        <textarea value={editContent} onChange={e => setEditContent(e.target.value)}
+                                          className="text-sm bg-white/10 rounded px-2 py-1 text-current border border-white/20 focus:outline-none focus:ring-1 focus:ring-white/40 resize-none"
+                                          rows={2} autoFocus
+                                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitEditDM(); } if (e.key === 'Escape') cancelEditDM(); }} />
+                                        <div className="flex gap-1 justify-end">
+                                          <button onClick={cancelEditDM} className="text-[10px] px-2 py-0.5 rounded bg-white/10 hover:bg-white/20">Cancel</button>
+                                          <button onClick={submitEditDM} className="text-[10px] px-2 py-0.5 rounded bg-white text-[#2563EB] font-bold">Save</button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                                        {msg.images?.length > 0 && (
+                                          <div className="mt-1.5 flex flex-col gap-1">
+                                            {msg.images.map((img, i) => (
+                                              <img key={i} src={resolveAssetUrl(img)} alt="" className="rounded-lg max-h-48 object-cover border border-white/20" />
+                                            ))}
+                                          </div>
+                                        )}
+                                        {msg.voice_url && <VoicePlayer src={msg.voice_url} dark={isOwn} />}
+                                      </>
+                                    )}
+
+                                    {/* Time + status + edited */}
+                                    {editingDM !== msg.dm_id && (
+                                      <div className="flex items-center justify-end gap-1 mt-0.5">
+                                        {msg.edited && (
+                                          <button onClick={() => setShowHistory(msg)} className={`text-[9px] ${isOwn ? 'text-white/60' : ''} italic hover:underline`}
+                                            style={!isOwn ? { color: 'var(--text-3)' } : {}} title="View edit history">
+                                            edited
+                                          </button>
+                                        )}
+                                        <span className={`text-[10px] ${isOwn ? 'text-white/60' : ''}`} style={!isOwn ? { color: 'var(--text-3)' } : {}}>
+                                          {formatChatTime(msg.created_at)}
+                                        </span>
+                                        {isOwn && (
+                                          <span className="text-[10px] text-white/80 ml-0.5">
+                                            {msg._status === 'sending' && '🕒'}
+                                            {msg._status === 'failed' && '⚠️'}
+                                            {(!msg._status || msg._status === 'sent') && (msg.read ? '✓✓' : '✓')}
+                                            {msg._status === 'read' && '✓✓'}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Reactions row */}
+                                  {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                                    <div className={`flex gap-1 mt-1 flex-wrap ${isOwn ? 'self-end' : 'self-start'}`}>
+                                      {Object.entries(msg.reactions).map(([emoji, users]) => (
+                                        <button key={emoji} onClick={() => reactDM(msg.dm_id, emoji)}
+                                          className="px-1.5 py-0.5 rounded-full text-xs border flex items-center gap-1"
+                                          style={{
+                                            background: users.includes(user.user_id) ? 'rgba(37,99,235,0.15)' : 'var(--bg-surface)',
+                                            borderColor: users.includes(user.user_id) ? 'var(--blue)' : 'var(--border-c)',
+                                            color: 'var(--text-1)'
+                                          }}>
+                                          <span>{emoji}</span>
+                                          <span className="text-[10px] font-bold">{users.length}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Hover actions (right side for own msgs, left for others) */}
+                                {editingDM !== msg.dm_id && (
+                                  <div className={`opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 ${isOwn ? 'order-first mr-1' : 'ml-1'}`}>
+                                    <button onClick={() => setReplyTo(msg)} title="Reply"
+                                      className="p-1 rounded-full hover:bg-black/10" style={{ color: 'var(--text-3)' }}>
+                                      <ArrowBendUpLeft size={12} weight="bold" />
+                                    </button>
+                                    <div className="relative">
+                                      <button onClick={() => setReactionPickerFor(reactionPickerFor === msg.dm_id ? null : msg.dm_id)} title="React"
+                                        className="p-1 rounded-full hover:bg-black/10 text-xs" style={{ color: 'var(--text-3)' }}>😊</button>
+                                      {reactionPickerFor === msg.dm_id && (
+                                        <div className="absolute z-10 top-full mt-1 right-0 flex gap-1 rounded-full border px-2 py-1 shadow-lg"
+                                          style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
+                                          {['❤️','😂','😮','😢','👍','🔥'].map(e => (
+                                            <button key={e} onClick={() => reactDM(msg.dm_id, e)} className="text-base hover:scale-125 transition-transform">{e}</button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                    {isOwn && !msg.voice_url && !msg.images?.length && (
+                                      <button onClick={() => startEditDM(msg)} title="Edit"
+                                        className="p-1 rounded-full hover:bg-black/10 text-[10px]" style={{ color: 'var(--text-3)' }}>✏️</button>
+                                    )}
+                                    {isOwn && (
+                                      <button onClick={() => unsendDM(msg.dm_id)} title="Unsend"
+                                        className="p-1 rounded-full hover:bg-red-100 text-[10px]" style={{ color: '#FF6B6B' }}>🗑️</button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+
+                      {/* Typing indicator */}
+                      {typingUser && (
+                        <div className="flex justify-start mt-1">
+                          <div className="px-3 py-2 rounded-2xl rounded-bl-sm flex items-center gap-1.5"
+                            style={{ background: 'var(--bg-surface)' }}>
+                            <span className="text-xs" style={{ color: 'var(--text-3)' }}>{activeDMUser?.display_name || 'User'} is typing</span>
+                            <span className="flex gap-0.5">
+                              <span className="w-1 h-1 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                              <span className="w-1 h-1 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                              <span className="w-1 h-1 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                            </span>
                           </div>
-                          )}
                         </div>
-                      ))}
+                      )}
+
                       <div ref={chatEndRef} />
                     </div>
                   </ScrollArea>
+
+                  {/* Reply preview above input */}
+                  {replyTo && (
+                    <div className="flex items-center gap-2 px-3 py-2 mb-2 rounded-lg border-l-2"
+                      style={{ background: 'var(--bg-surface)', borderLeftColor: 'var(--blue)' }}>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-bold" style={{ color: 'var(--blue)' }}>
+                          Replying to {replyTo.sender_id === user.user_id ? 'yourself' : (activeDMUser?.display_name || 'User')}
+                        </p>
+                        <p className="text-xs truncate" style={{ color: 'var(--text-2)' }}>{replyTo.content || (replyTo.voice_url ? '🎤 Voice message' : (replyTo.images?.length ? '📷 Image' : 'message'))}</p>
+                      </div>
+                      <button onClick={() => setReplyTo(null)} className="text-lg" style={{ color: 'var(--text-3)' }}>✕</button>
+                    </div>
+                  )}
 
                   {/* DM Image Previews */}
                   {dmAttachImages.length > 0 && (
@@ -1108,9 +1405,9 @@ const MainApp = ({ user, onLogout, updateUser }) => {
                     <input ref={dmFileRef} type="file" accept="image/*,video/mp4" className="hidden" onChange={handleDMImageUpload} />
                     <Input data-testid="dm-message-input"
                       value={newDMMessage}
-                      onChange={(e) => setNewDMMessage(e.target.value)}
+                      onChange={(e) => { setNewDMMessage(e.target.value); sendTypingSignal(); }}
                       onKeyDown={(e) => e.key === 'Enter' && sendDMMessage()}
-                      placeholder="Type a message..."
+                      placeholder={replyTo ? "Reply..." : "Type a message..."}
                       className="border-2 border-[#111111] rounded-xl px-3 py-2 shadow-[2px_2px_0px_0px_rgba(17,17,17,1)]" />
                     <Button data-testid="send-dm-message" onClick={sendDMMessage}
                       className="bg-[#2563EB] text-white border-2 border-[#111111] shadow-[4px_4px_0px_0px_rgba(17,17,17,1)] hover:translate-y-[2px] hover:translate-x-[2px] font-bold px-4 rounded-xl">
@@ -1129,6 +1426,34 @@ const MainApp = ({ user, onLogout, updateUser }) => {
       </div>
 
       {/* Active Call Overlay */}
+            {/* Edit History Modal */}
+      {showHistory && (
+        <div className="fixed inset-0 z-[80] bg-black/60 flex items-center justify-center p-4" onClick={() => setShowHistory(null)}>
+          <div className="rounded-2xl border max-w-md w-full p-5" onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--bg-card)', borderColor: 'var(--border-c)' }}>
+            <h3 className="font-black text-lg mb-3 flex items-center gap-2" style={{ color: 'var(--text-1)' }}>
+              ✏️ Edit History
+            </h3>
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+              {(showHistory.edit_history || []).map((h, i) => (
+                <div key={i} className="p-2 rounded-lg" style={{ background: 'var(--bg-surface)' }}>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-3)' }}>
+                    {new Date(h.edited_at).toLocaleString()}
+                  </p>
+                  <p className="text-sm line-through" style={{ color: 'var(--text-3)' }}>{h.old_content}</p>
+                </div>
+              ))}
+              <div className="p-2 rounded-lg border-l-2" style={{ background: 'var(--bg-surface)', borderLeftColor: '#16a34a' }}>
+                <p className="text-[10px] mb-1 font-bold" style={{ color: '#16a34a' }}>Current</p>
+                <p className="text-sm" style={{ color: 'var(--text-1)' }}>{showHistory.content}</p>
+              </div>
+            </div>
+            <button onClick={() => setShowHistory(null)} className="mt-3 w-full py-2 rounded-lg font-bold"
+              style={{ background: 'var(--blue)', color: '#fff' }}>Close</button>
+          </div>
+        </div>
+      )}
+
       {activeCall && (
         <CallUI
           wsRef={wsRef}
