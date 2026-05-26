@@ -410,6 +410,12 @@ class DirectMessage(BaseModel):
     reply_to: Optional[str] = None
     message_type: str = "text"   # text | call_log | system
     read: bool = False
+    delivered: bool = False
+    reactions: Dict[str, List[str]] = Field(default_factory=dict)
+    edited: bool = False
+    edit_history: List[Dict[str, Any]] = Field(default_factory=list)
+    deleted: bool = False
+    deleted_at: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class AdminAction(BaseModel):
@@ -1604,6 +1610,10 @@ async def repost(post_id: str, user: User = Depends(get_current_user)):
     doc = repost_data.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     doc['repost_original_username'] = original_username
+    # Carry over ALL media fields from the original post — not just text/images
+    for field in ['voice_url', 'video_url', 'video', 'attachments', 'links']:
+        if original.get(field):
+            doc[field] = original.get(field)
     await db.posts.insert_one(doc)
     
     # Increment share count on original
@@ -1702,7 +1712,7 @@ async def get_dm_conversations(user: User = Depends(get_current_user)):
     return result
 
 @api_router.get("/dm/{other_user_id}/messages")
-async def get_dm_messages(other_user_id: str, user: User = Depends(get_current_user), limit: int = 50):
+async def get_dm_messages(other_user_id: str, user: User = Depends(get_current_user), limit: int = 200):
     messages = await db.direct_messages.find(
         {"$or": [
             {"sender_id": user.user_id, "receiver_id": other_user_id},
@@ -1711,10 +1721,32 @@ async def get_dm_messages(other_user_id: str, user: User = Depends(get_current_u
         {"_id": 0}
     ).sort("created_at", 1).limit(limit).to_list(limit)
     
-    # Mark as read
+    # Populate reply_to context — embed snippet of the replied message
+    reply_ids = [m["reply_to"] for m in messages if m.get("reply_to")]
+    if reply_ids:
+        replied = await db.direct_messages.find(
+            {"dm_id": {"$in": reply_ids}}, {"_id": 0}
+        ).to_list(len(reply_ids))
+        replied_map = {r["dm_id"]: r for r in replied}
+        for m in messages:
+            if m.get("reply_to") and m["reply_to"] in replied_map:
+                r = replied_map[m["reply_to"]]
+                m["reply_context"] = {
+                    "dm_id": r["dm_id"],
+                    "sender_id": r["sender_id"],
+                    "content": (r.get("content") or "")[:120],
+                    "deleted": r.get("deleted", False)
+                }
+    
+    # Mark messages from other user as read
     await db.direct_messages.update_many(
         {"sender_id": other_user_id, "receiver_id": user.user_id, "read": False},
         {"$set": {"read": True}}
+    )
+    # Notify the sender via WS that their messages were read
+    await manager.send_personal_message(
+        {"type": "dm_read", "reader_id": user.user_id, "from_id": other_user_id},
+        other_user_id
     )
     
     for msg in messages:
@@ -1742,6 +1774,100 @@ async def search_dms(query: str = "", user: User = Depends(get_current_user)):
         msg['other_user'] = other_user
     
     return results
+
+
+# ── DM Edit ───────────────────────────────────────────────────────────────────
+@api_router.put("/dm/{dm_id}")
+async def edit_dm(dm_id: str, body: dict, user: User = Depends(get_current_user)):
+    dm = await db.direct_messages.find_one({"dm_id": dm_id}, {"_id": 0})
+    if not dm:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if dm["sender_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="You can only edit your own messages")
+    if dm.get("deleted"):
+        raise HTTPException(status_code=400, detail="Cannot edit a deleted message")
+    new_content = (body.get("content") or "").strip()
+    if not new_content:
+        raise HTTPException(status_code=400, detail="Content required")
+    edit_entry = {
+        "old_content": dm.get("content", ""),
+        "edited_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.direct_messages.update_one(
+        {"dm_id": dm_id},
+        {"$set": {"content": new_content, "edited": True}, "$push": {"edit_history": edit_entry}}
+    )
+    updated = await db.direct_messages.find_one({"dm_id": dm_id}, {"_id": 0})
+    # Notify both parties via WS
+    payload = {**updated, "type": "dm_edit"}
+    await manager.send_personal_message(payload, dm["receiver_id"])
+    await manager.send_personal_message(payload, dm["sender_id"])
+    return updated
+
+# ── DM Delete (unsend — keeps record but marks as deleted) ────────────────────
+@api_router.delete("/dm/{dm_id}")
+async def delete_dm(dm_id: str, user: User = Depends(get_current_user)):
+    dm = await db.direct_messages.find_one({"dm_id": dm_id}, {"_id": 0})
+    if not dm:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if dm["sender_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="You can only unsend your own messages")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.direct_messages.update_one(
+        {"dm_id": dm_id},
+        {"$set": {"deleted": True, "deleted_at": now_iso, "content": "", "images": [], "voice_url": None}}
+    )
+    payload = {"type": "dm_delete", "dm_id": dm_id, "sender_id": dm["sender_id"], "receiver_id": dm["receiver_id"]}
+    await manager.send_personal_message(payload, dm["receiver_id"])
+    await manager.send_personal_message(payload, dm["sender_id"])
+    return {"status": "success"}
+
+# ── DM React ──────────────────────────────────────────────────────────────────
+@api_router.post("/dm/{dm_id}/react")
+async def react_dm(dm_id: str, body: dict, user: User = Depends(get_current_user)):
+    emoji = body.get("emoji", "").strip()
+    if not emoji:
+        raise HTTPException(status_code=400, detail="Emoji required")
+    dm = await db.direct_messages.find_one({"dm_id": dm_id}, {"_id": 0})
+    if not dm:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if user.user_id not in [dm["sender_id"], dm["receiver_id"]]:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    reactions = dm.get("reactions", {})
+    # Toggle: if user already reacted with same emoji, remove; else add
+    cur = reactions.get(emoji, [])
+    if user.user_id in cur:
+        cur = [u for u in cur if u != user.user_id]
+        if cur:
+            reactions[emoji] = cur
+        else:
+            reactions.pop(emoji, None)
+    else:
+        # Remove user's other reactions on this msg (one reaction per user)
+        for e in list(reactions.keys()):
+            reactions[e] = [u for u in reactions[e] if u != user.user_id]
+            if not reactions[e]:
+                reactions.pop(e, None)
+        reactions[emoji] = cur + [user.user_id]
+    await db.direct_messages.update_one({"dm_id": dm_id}, {"$set": {"reactions": reactions}})
+    payload = {"type": "dm_react", "dm_id": dm_id, "reactions": reactions,
+               "sender_id": dm["sender_id"], "receiver_id": dm["receiver_id"]}
+    await manager.send_personal_message(payload, dm["receiver_id"])
+    await manager.send_personal_message(payload, dm["sender_id"])
+    return {"reactions": reactions}
+
+# ── Mark DM conversation as read ──────────────────────────────────────────────
+@api_router.post("/dm/{other_user_id}/mark-read")
+async def mark_dm_read(other_user_id: str, user: User = Depends(get_current_user)):
+    """Mark all messages from other_user as read."""
+    result = await db.direct_messages.update_many(
+        {"sender_id": other_user_id, "receiver_id": user.user_id, "read": False},
+        {"$set": {"read": True}}
+    )
+    # Notify the sender that their messages were read
+    payload = {"type": "dm_read", "reader_id": user.user_id, "from_id": other_user_id}
+    await manager.send_personal_message(payload, other_user_id)
+    return {"marked": result.modified_count}
 
 @api_router.post("/dm/{receiver_id}/send")
 async def send_dm(receiver_id: str, message: dict, user: User = Depends(get_current_user)):
@@ -2230,6 +2356,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 await manager.send_personal_message(dm_data, user_id)
             
             # WebRTC call signaling
+            elif data['type'] == 'dm_typing':
+                target_id = data.get('receiver_id')
+                if target_id:
+                    await manager.send_personal_message({
+                        "type": "dm_typing",
+                        "sender_id": user_id,
+                        "typing": bool(data.get('typing', True))
+                    }, target_id)
+            
             elif data['type'] == 'call_offer':
                 target_id = data['target_id']
                 if target_id in manager.active_connections:
@@ -2872,15 +3007,17 @@ async def get_ice_config(user: User = Depends(get_current_user)):
         except Exception as e:
             logger.warning(f"Could not fetch Metered TURN credentials: {e}")
     
-    # Always add free public TURN fallbacks
+    # Always add free public TURN fallbacks — multiple providers, UDP+TCP+TLS
     servers.extend([
-        # freestun.net — free public TURN server
-        {"urls": "turn:freestun.net:3478",  "username": "free", "credential": "free"},
-        {"urls": "turns:freestun.net:5349", "username": "free", "credential": "free"},
-        # Open relay fallbacks
-        {"urls": "turn:openrelay.metered.ca:80",  "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "turn:openrelay.metered.ca:443", "username": "openrelayproject", "credential": "openrelayproject"},
-        {"urls": "turn:openrelay.metered.ca:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
+        # freestun.net (UDP + TLS)
+        {"urls": ["turn:freestun.net:3478"],  "username": "free", "credential": "free"},
+        {"urls": ["turns:freestun.net:5349"], "username": "free", "credential": "free"},
+        # Open Relay (multiple ports including TCP for restrictive networks)
+        {"urls": ["turn:openrelay.metered.ca:80"],  "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": ["turn:openrelay.metered.ca:80?transport=tcp"], "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": ["turn:openrelay.metered.ca:443"], "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": ["turn:openrelay.metered.ca:443?transport=tcp"], "username": "openrelayproject", "credential": "openrelayproject"},
+        {"urls": ["turns:openrelay.metered.ca:443"], "username": "openrelayproject", "credential": "openrelayproject"},
     ])
     
     return {"ice_servers": servers, "has_metered": bool(metered_key)}
