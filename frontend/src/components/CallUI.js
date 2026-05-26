@@ -49,6 +49,7 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
   const iceBufRef      = useRef([]);
   const remoteSetRef   = useRef(false);
   const retryRef       = useRef(0);
+  const relayRetryRef  = useRef(false);
   const offerRef       = useRef(null);  // stored offer for retry
 
   // ── Fetch ICE servers from backend ────────────────────────────────────────
@@ -139,12 +140,17 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
 
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
+    let candTypeCount = { host: 0, srflx: 0, relay: 0, prflx: 0 };
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) {
-        debug(`ICE candidate: ${candidate.type} — ${candidate.address || 'hidden'}`);
+        candTypeCount[candidate.type] = (candTypeCount[candidate.type] || 0) + 1;
+        debug(`ICE candidate (${candidate.type}): host=${candTypeCount.host} srflx=${candTypeCount.srflx} relay=${candTypeCount.relay}`);
         wsSend(wsRef, { type: 'ice_candidate', target_id: targetUser.user_id, candidate });
       } else {
-        debug('ICE candidate gathering complete');
+        debug(`ICE gathering done: ${candTypeCount.host} host, ${candTypeCount.srflx} stun, ${candTypeCount.relay} turn`);
+        if (candTypeCount.relay === 0) {
+          console.warn('[BISD Call] NO TURN/RELAY CANDIDATES — TURN server may be unreachable. Cross-NAT calls will fail.');
+        }
       }
     };
 
@@ -171,13 +177,62 @@ const CallUI = ({ wsRef, user, targetUser, callType: callTypeProp, isIncoming, i
       }
       if (state === 'connecting') setStatus('connecting');
       if (state === 'failed') {
+        // Auto-retry once with relay-only mode (forces TURN, helps cross-NAT)
+        if (!relayRetryRef.current && retryRef.current < 2) {
+          relayRetryRef.current = true;
+          debug('Connection failed — retrying with TURN relay only...');
+          setStatus('retrying');
+          setError('Retrying with relay-only mode...');
+          // Restart ICE with relay-only policy
+          try { pc.close(); } catch {}
+          // Reconnect using relay-only mode
+          (async () => {
+            try {
+              const servers = iceServers || await fetchIceServers();
+              const relayConfig = { iceServers: servers, iceTransportPolicy: 'relay' };
+              const newPc = new RTCPeerConnection(relayConfig);
+              pcRef.current = newPc;
+              remoteSetRef.current = false;
+              iceBufRef.current = [];
+              localStreamRef.current.getTracks().forEach(t => newPc.addTrack(t, localStreamRef.current));
+              newPc.onicecandidate = ({ candidate }) => {
+                if (candidate) wsSend(wsRef, { type: 'ice_candidate', target_id: targetUser.user_id, candidate });
+              };
+              newPc.ontrack = (e) => {
+                if (!e.streams[0]) return;
+                if (isVideo && remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+                if (remoteAudioRef.current) remoteAudioRef.current.srcObject = e.streams[0];
+              };
+              newPc.onconnectionstatechange = pc.onconnectionstatechange;
+              newPc.oniceconnectionstatechange = pc.oniceconnectionstatechange;
+              if (!isIncoming) {
+                const offer = await newPc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: callType.current === 'video', iceRestart: true });
+                await newPc.setLocalDescription(offer);
+                wsSend(wsRef, { type: 'call_offer', target_id: targetUser.user_id, call_type: callType.current,
+                  caller_name: user.display_name, caller_picture: user.profile_picture, sdp: offer });
+              }
+            } catch (err) {
+              setError(
+                '❌ Connection failed. This can happen when:\n' +
+                '• Both users are on strict corporate/school firewalls\n' +
+                '• TURN relay servers are blocked\n' +
+                '• Mobile carrier is restricting WebRTC traffic\n\n' +
+                'Try: switching to Wi-Fi, asking the other person to rejoin, or contact your network admin.'
+              );
+              setTimeout(endCall, 6000);
+            }
+          })();
+          return;
+        }
         setError(
-          '❌ Connection failed. This can happen when:\n' +
-          '• Both users are on strict corporate/school firewalls\n' +
-          '• One user\'s TURN relay is blocked\n' +
-          'Try asking the other person to rejoin, or contact your network admin.'
+          '❌ Connection failed after retrying.\n\n' +
+          'Common causes:\n' +
+          '• Mobile carrier blocking WebRTC media\n' +
+          '• Strict firewall on one side\n' +
+          '• Both sides on the same restrictive network\n\n' +
+          'Try switching to Wi-Fi and calling again.'
         );
-        setTimeout(endCall, 5000);
+        setTimeout(endCall, 6000);
       }
       if (state === 'disconnected') setStatus('reconnecting...');
     };
