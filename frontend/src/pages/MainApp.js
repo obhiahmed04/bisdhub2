@@ -11,7 +11,7 @@ import {
   SignOut, Heart, ChatCircle, PaperPlaneRight, Flag, ShieldCheck, Crown,
   Moon, Sun, GearSix, ShareNetwork, ArrowsClockwise, UserPlus, Copy,
   UsersThree, ArrowBendUpLeft, Smiley, WarningCircle, Trash,
-  Phone, VideoCamera, Image, CaretLeft, ArrowBendUpLeft } from '@phosphor-icons/react';
+  Phone, VideoCamera, Image, CaretLeft } from '@phosphor-icons/react';
 import api, { API_BASE, WS_BASE, getPublicName, getSecondaryIdentity, resolveAssetUrl } from '../utils/api';
 import NotificationBell from '../components/NotificationBell';
 import CreatePostDialog from '../components/CreatePostDialog';
